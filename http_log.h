@@ -328,21 +328,28 @@ public:
 		try {
 			inner_.handle(req, cap);
 		} catch (...) {
-			// The exception's description and (when enabled) its backtrace come from
-			// the logger's hooks; a consumer points Logging::hooks.backtrace at its
-			// traceback provider.
-			L_EXC(std::string("unhandled exception in ") + req.method + " " + req.path);
-			// Run the inner handler's error mapping HERE, with the same CapturingWriter
-			// that is still alive on the stack, rather than rethrowing and letting the
-			// framework call on_error with a fresh writer. A handler may have stored a
-			// pointer to `cap` during handle() (Xapiand's request.response_writer), so
-			// its on_error must write through that same object -- rethrowing would
-			// destroy `cap` first and leave the stored pointer dangling. If it leaves
-			// the response unanswered, write the generic 500 fallback ourselves.
+			// Let the inner handler map the exception to a response FIRST. on_error is
+			// the handler's expected-error seam (a client error becomes a clean 4xx).
+			// Run it here (rather than rethrowing and letting the framework call on_error
+			// with a fresh writer) so the same CapturingWriter stays alive: a handler may
+			// have stored a pointer to `cap` during handle() (Xapiand's
+			// request.response_writer), and rethrowing would destroy `cap` first and
+			// leave that pointer dangling. If on_error leaves the response unanswered,
+			// write the generic 500 fallback ourselves.
 			try {
 				inner_.on_error(std::current_exception(), req, cap);
 			} catch (...) {}
 			if (!cap.started) { cap.send(500, "Internal Server Error\n"); }
+			// Only a server error (5xx) or an unanswered request is genuinely unhandled:
+			// log the exception (its description, and the backtrace when a consumer wires
+			// Logging::hooks.backtrace) at CRIT for those. An expected client error that
+			// on_error mapped to a 4xx is handled, not "unhandled" -- the response block
+			// below already carries its status and message, so don't cry wolf with a CRIT
+			// backtrace on every 404. (std::current_exception() is still the original one
+			// here: on_error's own try/catch has completed, so we are back in this catch.)
+			if (cap.code >= 500) {
+				L_EXC(std::string("unhandled exception in ") + req.method + " " + req.path);
+			}
 			log_response(cap, req.http_major, req.http_minor);
 			return;
 		}

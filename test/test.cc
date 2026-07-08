@@ -38,6 +38,18 @@ struct Echo : http::HttpHandler {
 	}
 };
 
+// A handler whose on_error maps its exception to a clean 4xx (an expected client
+// error). The middleware must map + log the response but must NOT cry "unhandled
+// exception" -- that CRIT line is reserved for 5xx / unanswered requests.
+struct ClientErr : http::HttpHandler {
+	void handle(const http::Request& /*req*/, http::ResponseWriter& /*resp*/) override {
+		throw std::runtime_error("bad input");
+	}
+	void on_error(std::exception_ptr, const http::Request& /*req*/, http::ResponseWriter& resp) override {
+		resp.send(404, std::string("{\"error\":\"not found\"}"), "application/json");
+	}
+};
+
 static bool contains(std::string_view hay, std::string_view needle) {
 	return hay.find(needle) != std::string_view::npos;
 }
@@ -165,6 +177,17 @@ int main() {
 		MockWriter w;
 		access.handle(req, w);   // maps the error internally; must not throw
 	}
+	// A client error: the handler throws, but its on_error maps it to a 404. The
+	// middleware must log the 404 response and must NOT log an "unhandled exception".
+	{
+		ClientErr cerr;
+		AccessLog cerr_access(cerr);
+		http::Request req;
+		req.method = "GET";
+		req.path = "/missing";
+		MockWriter w;
+		cerr_access.handle(req, w);
+	}
 
 	Logging::finish();
 	std::string logged = cap->take();
@@ -173,8 +196,11 @@ int main() {
 	CHECK(contains(logged, "HTTP/1.1 200 OK"));           // response head
 	CHECK(contains(logged, "\"ok\":true"));               // prettified response body
 	CHECK(contains(logged, "GET /boom"));                 // the failing request
-	CHECK(contains(logged, "unhandled exception in GET /boom"));  // the exception line
+	CHECK(contains(logged, "unhandled exception in GET /boom"));  // the 500 exception line
 	CHECK(contains(logged, "HTTP/1.1 500"));              // the error response, logged
+	CHECK(contains(logged, "GET /missing"));                          // the client-error request
+	CHECK(contains(logged, "HTTP/1.1 404"));                          // on_error mapped it to a 404
+	CHECK(!contains(logged, "unhandled exception in GET /missing"));  // ... and it is NOT cried as unhandled
 
 	if (g_failures == 0) {
 		std::puts("all http-log tests passed");
