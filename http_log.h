@@ -243,6 +243,10 @@ inline int status_level(const Options& o, int status) {
 // `cap_` bytes (Options::capture_limit) while the true length is tracked in
 // `body_size`, so a large or streamed response never grows the middleware's memory
 // past the cap -- render_body summarizes anything it did not retain in full.
+// The copy fallback: a wrapping writer used only when the underlying writer does not
+// implement http::BufferedResponse (does not retain its response). The common reactor
+// writer (AsioResponseWriter) is buffered, so this path is not taken there and the
+// middleware logs by reference instead (see AccessLog::handle).
 class CapturingWriter : public http::ResponseWriter {
 	http::ResponseWriter& real_;
 	std::size_t cap_;
@@ -306,17 +310,20 @@ class AccessLog : public http::HttpHandler {
 
 	// The response block: the status emoji + "HTTP/v STATUS reason" (status-colored),
 	// the response headers (timing rides in a Response-Time header the app sets), body.
-	void log_response(const CapturingWriter& cap, int http_major, int http_minor) {
-		int level = status_level(opts_, cap.code);
+	// Takes the response by value views so it can render either a borrowed (zero-copy)
+	// buffered response or the copy fallback.
+	void log_response(int code, const http::Headers& headers, std::string_view content_type,
+			std::string_view body, std::size_t body_size, int http_major, int http_minor) {
+		int level = status_level(opts_, code);
 		if (Logging::config.log_level < level) return;
-		const Palette& p = status_palette(cap.code);
+		const Palette& p = status_palette(code);
 		std::string head = "HTTP/" + std::to_string(http_major) + "." + std::to_string(http_minor) +
-			" " + std::to_string(cap.code) + " " + http::reason_phrase(cap.code);
-		std::string block = p.head + head + "\n" + p.headers + headers_block(cap.headers);
-		std::string b = render_body(cap.content_type, cap.body, cap.body_size, opts_, Logging::config.log_level, "body");
+			" " + std::to_string(code) + " " + http::reason_phrase(code);
+		std::string block = p.head + head + "\n" + p.headers + headers_block(headers);
+		std::string b = render_body(content_type, body, body_size, opts_, Logging::config.log_level, "body");
 		if (!b.empty()) { block += p.text; block += b; }
 		block += reset();
-		emit(level, status_prefix(cap.code), block);
+		emit(level, status_prefix(code), block);
 	}
 
 public:
@@ -324,36 +331,52 @@ public:
 
 	void handle(const http::Request& req, http::ResponseWriter& response) override {
 		log_request(req);
+
+		// Zero-copy path: a buffered writer retains its response, so log it by reference
+		// -- no second copy of the headers/body. The reactor's AsioResponseWriter is
+		// buffered; a streaming / non-buffering writer is not, and we fall back to
+		// capturing below. Passing the real writer straight through also keeps any
+		// pointer a handler stored to it (Xapiand's request.response_writer) valid
+		// through on_error: there is no wrapper to destroy on the throw path.
+		if (auto* buf = dynamic_cast<http::BufferedResponse*>(&response)) {
+			try {
+				inner_.handle(req, response);
+			} catch (...) {
+				// Let the inner handler map the exception to a response first (its
+				// on_error seam turns an expected client error into a clean 4xx); if it
+				// leaves the response unanswered, write the generic 500 ourselves.
+				try {
+					inner_.on_error(std::current_exception(), req, response);
+				} catch (...) {}
+				if (!buf->response_started()) { response.send(500, "Internal Server Error\n"); }
+				// Only a genuine 5xx (or unanswered request) is unhandled: log it with a
+				// backtrace at CRIT. A 4xx that on_error mapped is handled, not "unhandled"
+				// -- the response block below carries its status, so don't cry wolf.
+				if (buf->response_code() >= 500) {
+					L_EXC(std::string("unhandled exception in ") + req.method + " " + req.path);
+				}
+			}
+			std::string_view body = buf->response_body();
+			log_response(buf->response_code(), buf->response_headers(), buf->response_content_type(),
+				body, body.size(), req.http_major, req.http_minor);
+			return;
+		}
+
+		// Copy fallback: the writer does not retain its response, so capture it.
 		CapturingWriter cap(response, opts_.capture_limit);
 		try {
 			inner_.handle(req, cap);
 		} catch (...) {
-			// Let the inner handler map the exception to a response FIRST. on_error is
-			// the handler's expected-error seam (a client error becomes a clean 4xx).
-			// Run it here (rather than rethrowing and letting the framework call on_error
-			// with a fresh writer) so the same CapturingWriter stays alive: a handler may
-			// have stored a pointer to `cap` during handle() (Xapiand's
-			// request.response_writer), and rethrowing would destroy `cap` first and
-			// leave that pointer dangling. If on_error leaves the response unanswered,
-			// write the generic 500 fallback ourselves.
 			try {
 				inner_.on_error(std::current_exception(), req, cap);
 			} catch (...) {}
 			if (!cap.started) { cap.send(500, "Internal Server Error\n"); }
-			// Only a server error (5xx) or an unanswered request is genuinely unhandled:
-			// log the exception (its description, and the backtrace when a consumer wires
-			// Logging::hooks.backtrace) at CRIT for those. An expected client error that
-			// on_error mapped to a 4xx is handled, not "unhandled" -- the response block
-			// below already carries its status and message, so don't cry wolf with a CRIT
-			// backtrace on every 404. (std::current_exception() is still the original one
-			// here: on_error's own try/catch has completed, so we are back in this catch.)
 			if (cap.code >= 500) {
 				L_EXC(std::string("unhandled exception in ") + req.method + " " + req.path);
 			}
-			log_response(cap, req.http_major, req.http_minor);
-			return;
 		}
-		log_response(cap, req.http_major, req.http_minor);
+		log_response(cap.code, cap.headers, cap.content_type, cap.body, cap.body_size,
+			req.http_major, req.http_minor);
 	}
 
 	// Not overridden on purpose: handle() catches and maps errors itself (so the
