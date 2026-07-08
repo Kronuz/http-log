@@ -330,26 +330,28 @@ public:
 		} catch (...) {
 			// The exception's description and (when enabled) its backtrace come from
 			// the logger's hooks; a consumer points Logging::hooks.backtrace at its
-			// traceback provider. Rethrow so the framework's backstop hands it to the
-			// inner handler's on_error() for the real status mapping.
+			// traceback provider.
 			L_EXC(std::string("unhandled exception in ") + req.method + " " + req.path);
-			throw;
+			// Run the inner handler's error mapping HERE, with the same CapturingWriter
+			// that is still alive on the stack, rather than rethrowing and letting the
+			// framework call on_error with a fresh writer. A handler may have stored a
+			// pointer to `cap` during handle() (Xapiand's request.response_writer), so
+			// its on_error must write through that same object -- rethrowing would
+			// destroy `cap` first and leave the stored pointer dangling. If it leaves
+			// the response unanswered, write the generic 500 fallback ourselves.
+			try {
+				inner_.on_error(std::current_exception(), req, cap);
+			} catch (...) {}
+			if (!cap.started) { cap.send(500, "Internal Server Error\n"); }
+			log_response(cap, req.http_major, req.http_minor);
+			return;
 		}
 		log_response(cap, req.http_major, req.http_minor);
 	}
 
-	void on_error(std::exception_ptr error, const http::Request& req, http::ResponseWriter& response) override {
-		// The framework calls this after handle() threw. Capture the response the
-		// inner handler's error mapping writes, so the error response is logged too.
-		// If the inner leaves it unanswered, reflect the framework's generic 500.
-		CapturingWriter cap(response, opts_.capture_limit);
-		inner_.on_error(error, req, cap);
-		if (!cap.started) {
-			cap.code = 500;
-			cap.content_type = "text/plain; charset=utf-8";
-		}
-		log_response(cap, req.http_major, req.http_minor);
-	}
+	// Not overridden on purpose: handle() catches and maps errors itself (so the
+	// inner handler's stored response_writer stays valid), and never rethrows, so the
+	// framework's on_error backstop is not used.
 
 	std::unique_ptr<http::BodySink> on_request_body(http::Request& req) override {
 		return inner_.on_request_body(req);

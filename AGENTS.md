@@ -75,12 +75,17 @@ rendering it indented) and the previewable-type set are hooks (`Options::prettif
   inner `handle()` returns (fine for a buffered handler that calls `end()` within
   `handle()`); a handler that defers `end()` past `handle()` return is a known
   limitation.
-- **The error path preserves the app's status mapping.** `handle()` logs the thrown
-  exception (`L_EXC`, so the description + backtrace come from the logger hooks) and
-  *rethrows*, so the framework's backstop calls the inner handler's `on_error` for the
-  real status mapping (e.g. a client error → 400). `AccessLog::on_error` captures that
-  mapped response and logs it; if the inner leaves it unanswered, it reflects the
-  framework's generic 500 fallback.
+- **The error path preserves the app's status mapping without dangling a stored
+  writer.** `handle()` wraps the response in a `CapturingWriter` (a local) and passes
+  it to the inner handler; an application may store a pointer to it (Xapiand does:
+  `request.response_writer = &response`). So when the inner `handle()` throws,
+  `AccessLog::handle()` logs the exception (`L_EXC`) and runs the inner handler's
+  `on_error` **itself, with that same still-alive `CapturingWriter`**, then writes a
+  generic 500 fallback if the response was left unanswered, and does **not** rethrow.
+  Rethrowing (to let the framework's backstop call `on_error` with a fresh writer)
+  would destroy the `CapturingWriter` first and leave the stored pointer dangling --
+  a real segfault, caught by running it in Xapiand. `AccessLog` therefore does not
+  override `on_error`; keep it that way.
 
 ## Rendering fidelity (from Xapiand's to_text)
 

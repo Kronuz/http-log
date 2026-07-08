@@ -156,18 +156,14 @@ int main() {
 		MockWriter w;
 		access.handle(req, w);
 	}
-	// The exception + error path: handle() rethrows, the framework would call on_error.
+	// The exception + error path: handle() catches, runs the inner on_error with the
+	// same writer, writes a generic 500 fallback (Echo has no on_error), and logs it.
 	{
 		http::Request req;
 		req.method = "GET";
 		req.path = "/boom";
 		MockWriter w;
-		try {
-			access.handle(req, w);
-			CHECK(false);   // /boom must throw
-		} catch (...) {
-			access.on_error(std::current_exception(), req, w);
-		}
+		access.handle(req, w);   // maps the error internally; must not throw
 	}
 
 	Logging::finish();
