@@ -13,12 +13,15 @@ decomposition deleted them (Xapiand commit `602dcdd33`).
 ## File map
 
 ```
-http_log.h        everything: the utilities (b64encode / repr / human_bytes), the
-                  per-method and per-status color palettes, Options + the Prettify /
-                  CanPreview hooks, the body/header/head rendering, CapturingWriter,
-                  and the AccessLog middleware.
+http_log.h        everything: the compile-time per-method / per-status term-color
+                  palettes, Options + the Prettify / CanPreview hooks, the
+                  body/header rendering (cppcodec base64, strings::from_bytes /
+                  indent, repr), CapturingWriter, and the AccessLog middleware.
 CMakeLists.txt    INTERFACE library http_log (+ alias http_log::http_log); FetchContents
-                  http + logger, guarded so a consumer that already has them is reused.
+                  http + logger + strings + repr + cppcodec, guarded so a consumer that
+                  already has them is reused.
+test/test.cc      ctest: palettes, render_body branches, status prefix/level, the
+                  middleware end-to-end through a capturing sink (CHECK, not assert).
 ```
 
 ## Dependencies
@@ -26,11 +29,31 @@ CMakeLists.txt    INTERFACE library http_log (+ alias http_log::http_log); Fetch
 - **http** (`http_handler.h`, `http_message.h`) — the `HttpHandler` seam it decorates,
   plus `Request` / `ResponseWriter` / `reason_phrase` / `iequal` / `Headers`.
 - **logger** — the sink it logs through (`Logging::do_log`, the levels, `ASYNC_LOG_LEVEL`).
-  It brings **term-color**, whose `rgb()`/`rgba()`/`brgb()`/`CLEAR_COLOR` build the
-  palettes.
+  It brings **term-color**, whose compile-time `rgb()`/`rgba()`/`brgb()`/`CLEAR_COLOR`
+  build the palettes.
+- **strings** (`strings::from_bytes` / `indent` / `format`) and **repr** (`repr`) — the
+  same utilities Xapiand's `to_text` used, so the rendering is verbatim.
+- **cppcodec** — the base64 codec (`base64_rfc4648`) for the iTerm2 image escape, the
+  same one Xapiand used. Fetched header-only (`SOURCE_SUBDIR` skips its CMakeLists).
 
-No dependency on Xapiand. The body pretty-printing and the previewable-type set are
-hooks (`Options::prettify`, `Options::can_preview`), so a host injects its own fidelity.
+No dependency on Xapiand. The body pretty-printing (decoding a body to a MsgPack and
+rendering it indented) and the previewable-type set are hooks (`Options::prettify`,
+`Options::can_preview`), so a host injects its own fidelity.
+
+## Streaming and bounded memory
+
+- **The middleware never buffers a whole request or response.** A streamed request
+  body (a handler that returned true from `wants_body_stream`, e.g. Xapiand's
+  RESTORE) leaves `Request::body` empty and flows through `Request::body_reader`, so
+  `log_request` renders the head + headers with no body: nothing is accumulated. The
+  response is captured through `CapturingWriter`, which retains at most
+  `Options::capture_limit` bytes (default 1 MiB) while tracking the true length in
+  `body_size`; a larger response keeps flowing to the real writer but is only
+  summarized in the log. `render_body` never prettifies or base64-images a body it
+  did not retain in full (`body.size() < total_size`), so the log cost is
+  O(capture_limit) regardless of the payload. Keep it that way: do not remove the
+  `cap_` bound in `write()` or feed `render_body` a `total_size` that is not the true
+  length.
 
 ## Load-bearing invariants
 

@@ -1,123 +1,82 @@
 // http-log — an http::HttpHandler middleware that logs each HTTP request and
-// response through Kronuz/logger, with term-color, recovering the rich request/
-// response logging Xapiand once had (Request::to_text / Response::to_text, deleted
-// in Xapiand commit 602dcdd33 "Leg 2 (stage 3d): delete Xapiand's Response class").
-//
-// What it renders, faithful to that original:
-//   - a per-HTTP-method color palette for the request (GET/SEARCH/COUNT/DUMP blue,
-//     POST/PUT/PATCH/UPDATE/UPSERT/RESTORE orange, DELETE red, COMMIT teal,
-//     OPEN/CLOSE pink, OPTIONS/INFO/HEAD purple), and a per-status palette for the
-//     response (2xx green, 3xx teal, 404 tan, 4xx orange-red, 5xx red);
-//   - prettified request/response bodies via a pluggable hook (Xapiand injects its
-//     MsgPack/JSON/YAML pretty-printer; a plain app injects a JSON reindenter);
-//   - iTerm2 inline image previews for image/document bodies (gated on verbosity);
-//   - large-body truncation to a "<body N bytes>" summary and an escaped repr for
-//     binary; timing; and the exception path (an unhandled throw is logged with a
-//     backtrace via the logger's hook, then handed to the inner handler's error
-//     mapping).
+// response through Kronuz/logger, in color. It recovers the request/response
+// logging Xapiand had in Request::to_text / Response::to_text before the
+// decomposition deleted them (Xapiand commit 602dcdd33 "Leg 2 (stage 3d): delete
+// Xapiand's Response class"), brought over close to verbatim: the same compile-time
+// term-color palettes (rgb / rgba / brgb), the same cppcodec base64 for the iTerm2
+// image escape, the same strings::from_bytes / strings::indent, and the same repr
+// for binary bodies. The one Xapiand-specific piece, decoding a body to a MsgPack
+// and rendering it indented, is a hook a consumer injects.
 //
 // Colors are term-color stacked escapes; the logger sink resolves them per
 // --color / NO_COLOR / terminal depth. Header-only; depends on Kronuz/http (the
-// HttpHandler seam), Kronuz/logger, and Kronuz/term-color (via logger).
+// HttpHandler seam), Kronuz/logger (+ term-color), Kronuz/strings, Kronuz/repr, and
+// cppcodec (base64).
 
 #pragma once
 
 #include <chrono>
-#include <cctype>
-#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 
-#include "http_handler.h"   // http::HttpHandler / Request / ResponseWriter
-#include "http_message.h"   // http::reason_phrase / http::iequal / http::Headers
-#include "colors.h"         // term-color: rgb()/rgba()/brgb()/NO_COLOR/CLEAR_COLOR
-#include "logger.h"         // Kronuz/logger: Logging, LogConfig, the L_* macros
+#include "cppcodec/base64_rfc4648.hpp"   // base64 for the iTerm2 image escape (as Xapiand)
+#include "http_handler.h"                // http::HttpHandler / Request / ResponseWriter
+#include "http_message.h"                // http::reason_phrase / http::iequal / http::Headers
+#include "colors.h"                      // term-color: rgb()/rgba()/brgb()/NO_COLOR/CLEAR_COLOR
+#include "logger.h"                      // Kronuz/logger: Logging, LogConfig, the L_* macros
+#include "repr.hh"                       // Kronuz/repr: repr() for binary bodies
+#include "strings.hh"                    // Kronuz/strings: from_bytes / indent / format
 
 namespace http_log {
 
 // ---------------------------------------------------------------------------
-// Small self-contained utilities (base64 for the iTerm2 image escape, an escaped
-// repr for binary, and a human byte size). Kept inline so the lib needs no extra
-// dependency.
-// ---------------------------------------------------------------------------
-inline std::string b64encode(std::string_view in) {
-	static const char* T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-	std::string out;
-	out.reserve((in.size() + 2) / 3 * 4);
-	std::size_t i = 0;
-	for (; i + 2 < in.size(); i += 3) {
-		unsigned n = (unsigned char)in[i] << 16 | (unsigned char)in[i + 1] << 8 | (unsigned char)in[i + 2];
-		out += T[n >> 18 & 63]; out += T[n >> 12 & 63]; out += T[n >> 6 & 63]; out += T[n & 63];
-	}
-	if (i < in.size()) {
-		unsigned n = (unsigned char)in[i] << 16;
-		if (i + 1 < in.size()) n |= (unsigned char)in[i + 1] << 8;
-		out += T[n >> 18 & 63]; out += T[n >> 12 & 63];
-		out += (i + 1 < in.size()) ? T[n >> 6 & 63] : '=';
-		out += '=';
-	}
-	return out;
-}
-
-// A printable, length-capped rendering of arbitrary bytes: printable ASCII passes
-// through, everything else is \xNN. For the binary-body summary in the log.
-inline std::string repr(std::string_view s, std::size_t max = 500) {
-	std::string out;
-	std::size_t n = s.size() < max ? s.size() : max;
-	out.reserve(n + 8);
-	static const char* H = "0123456789abcdef";
-	for (std::size_t i = 0; i < n; ++i) {
-		unsigned char c = (unsigned char)s[i];
-		if (c == '\n') { out += "\\n"; }
-		else if (c == '\t') { out += "\\t"; }
-		else if (c == '\r') { out += "\\r"; }
-		else if (c >= 0x20 && c < 0x7f) { out += (char)c; }
-		else { out += "\\x"; out += H[c >> 4]; out += H[c & 0xf]; }
-	}
-	if (s.size() > max) { out += "..."; }
-	return out;
-}
-
-inline std::string human_bytes(std::size_t n) {
-	static const char* U[] = {"B", "KiB", "MiB", "GiB", "TiB"};
-	double v = (double)n;
-	int u = 0;
-	while (v >= 1024.0 && u < 4) { v /= 1024.0; ++u; }
-	char buf[32];
-	if (u == 0) std::snprintf(buf, sizeof buf, "%zu B", n);
-	else std::snprintf(buf, sizeof buf, "%.1f %s", v, U[u]);
-	return buf;
-}
-
-// ---------------------------------------------------------------------------
-// Color palettes (term-color stacked escapes). head = bold, headers = dimmed
-// (alpha 0.6), text = plain. Ported verbatim from Xapiand's to_text().
+// Color palettes: head bold (brgb), headers dimmed (rgba alpha 0.6), text plain
+// (rgb). Compile-time constants selected at runtime by method / status, ported
+// verbatim from Xapiand's Request::to_text / Response::to_text. The c_str() point
+// at function-local static constexpr static_strings (program-lifetime storage).
 // ---------------------------------------------------------------------------
 struct Palette {
-	std::string head, headers, text;
+	const char* head;
+	const char* headers;
+	const char* text;
 };
 
-namespace detail {
-inline std::string sv(auto&& c) { return std::string(std::string_view(c)); }
-inline Palette pal(auto&& h, auto&& hd, auto&& t) { return {sv(h), sv(hd), sv(t)}; }
-}  // namespace detail
-
-inline const std::string& reset() {
-	static const std::string s = detail::sv(CLEAR_COLOR);
-	return s;
-}
-
 inline const Palette& method_palette(std::string_view m) {
-	static const Palette purple = detail::pal(brgb(100, 64, 131), rgba(100, 64, 131, 0.6), rgb(100, 64, 131));
-	static const Palette blue   = detail::pal(brgb(34, 113, 191),  rgba(34, 113, 191, 0.6),  rgb(34, 113, 191));
-	static const Palette orange = detail::pal(brgb(158, 90, 28),   rgba(158, 90, 28, 0.6),   rgb(158, 90, 28));
-	static const Palette red    = detail::pal(brgb(158, 56, 28),   rgba(158, 56, 28, 0.6),   rgb(158, 56, 28));
-	static const Palette teal   = detail::pal(brgb(51, 136, 116),  rgba(51, 136, 116, 0.6),  rgb(51, 136, 116));
-	static const Palette pink   = detail::pal(brgb(158, 28, 71),   rgba(158, 28, 71, 0.6),   rgb(158, 28, 71));
-	static const Palette none   = {"", "", ""};
+	static constexpr auto nc = NO_COLOR;
+	// OPTIONS / INFO / HEAD — rgb(100, 64, 131) purple
+	static constexpr auto ph = brgb(100, 64, 131);
+	static constexpr auto phd = rgba(100, 64, 131, 0.6);
+	static constexpr auto pt = rgb(100, 64, 131);
+	// GET / SEARCH / COUNT / DUMP — rgb(34, 113, 191) blue
+	static constexpr auto bh = brgb(34, 113, 191);
+	static constexpr auto bhd = rgba(34, 113, 191, 0.6);
+	static constexpr auto bt = rgb(34, 113, 191);
+	// POST / RESTORE / PATCH / UPDATE / UPSERT / PUT — rgb(158, 90, 28) orange
+	static constexpr auto oh = brgb(158, 90, 28);
+	static constexpr auto ohd = rgba(158, 90, 28, 0.6);
+	static constexpr auto ot = rgb(158, 90, 28);
+	// DELETE — rgb(158, 56, 28) red
+	static constexpr auto rh = brgb(158, 56, 28);
+	static constexpr auto rhd = rgba(158, 56, 28, 0.6);
+	static constexpr auto rt = rgb(158, 56, 28);
+	// COMMIT — rgb(51, 136, 116) teal
+	static constexpr auto th = brgb(51, 136, 116);
+	static constexpr auto thd = rgba(51, 136, 116, 0.6);
+	static constexpr auto tt = rgb(51, 136, 116);
+	// OPEN / CLOSE — rgb(158, 28, 71) pink
+	static constexpr auto kh = brgb(158, 28, 71);
+	static constexpr auto khd = rgba(158, 28, 71, 0.6);
+	static constexpr auto kt = rgb(158, 28, 71);
+	static const Palette purple{ph.c_str(), phd.c_str(), pt.c_str()};
+	static const Palette blue{bh.c_str(), bhd.c_str(), bt.c_str()};
+	static const Palette orange{oh.c_str(), ohd.c_str(), ot.c_str()};
+	static const Palette red{rh.c_str(), rhd.c_str(), rt.c_str()};
+	static const Palette teal{th.c_str(), thd.c_str(), tt.c_str()};
+	static const Palette pink{kh.c_str(), khd.c_str(), kt.c_str()};
+	static const Palette none{nc.c_str(), nc.c_str(), nc.c_str()};
 	if (m == "OPTIONS" || m == "INFO" || m == "HEAD") return purple;
 	if (m == "GET" || m == "SEARCH" || m == "COUNT" || m == "DUMP") return blue;
 	if (m == "POST" || m == "RESTORE" || m == "PATCH" || m == "UPDATE" || m == "UPSERT" || m == "PUT") return orange;
@@ -128,12 +87,33 @@ inline const Palette& method_palette(std::string_view m) {
 }
 
 inline const Palette& status_palette(int status) {
-	static const Palette green = detail::pal(brgb(68, 136, 68),   rgba(68, 136, 68, 0.6),   rgb(68, 136, 68));
-	static const Palette tgreen = detail::pal(brgb(68, 136, 120), rgba(68, 136, 120, 0.6),  rgb(68, 136, 120));
-	static const Palette tan   = detail::pal(brgb(116, 100, 77),  rgba(116, 100, 77, 0.6),  rgb(116, 100, 77));
-	static const Palette ored  = detail::pal(brgb(183, 70, 17),   rgba(183, 70, 17, 0.6),   rgb(183, 70, 17));
-	static const Palette red   = detail::pal(brgb(190, 30, 10),   rgba(190, 30, 10, 0.6),   rgb(190, 30, 10));
-	static const Palette none  = {"", "", ""};
+	static constexpr auto nc = NO_COLOR;
+	// 2xx — rgb(68, 136, 68) green
+	static constexpr auto gh = brgb(68, 136, 68);
+	static constexpr auto ghd = rgba(68, 136, 68, 0.6);
+	static constexpr auto gt = rgb(68, 136, 68);
+	// 3xx — rgb(68, 136, 120) teal-green
+	static constexpr auto th = brgb(68, 136, 120);
+	static constexpr auto thd = rgba(68, 136, 120, 0.6);
+	static constexpr auto tt = rgb(68, 136, 120);
+	// 404 — rgb(116, 100, 77) tan
+	static constexpr auto ah = brgb(116, 100, 77);
+	static constexpr auto ahd = rgba(116, 100, 77, 0.6);
+	static constexpr auto at = rgb(116, 100, 77);
+	// 4xx — rgb(183, 70, 17) orange-red
+	static constexpr auto oh = brgb(183, 70, 17);
+	static constexpr auto ohd = rgba(183, 70, 17, 0.6);
+	static constexpr auto ot = rgb(183, 70, 17);
+	// 5xx — rgb(190, 30, 10) red
+	static constexpr auto rh = brgb(190, 30, 10);
+	static constexpr auto rhd = rgba(190, 30, 10, 0.6);
+	static constexpr auto rt = rgb(190, 30, 10);
+	static const Palette green{gh.c_str(), ghd.c_str(), gt.c_str()};
+	static const Palette tgreen{th.c_str(), thd.c_str(), tt.c_str()};
+	static const Palette tan{ah.c_str(), ahd.c_str(), at.c_str()};
+	static const Palette ored{oh.c_str(), ohd.c_str(), ot.c_str()};
+	static const Palette red{rh.c_str(), rhd.c_str(), rt.c_str()};
+	static const Palette none{nc.c_str(), nc.c_str(), nc.c_str()};
 	if (status >= 200 && status <= 299) return green;
 	if (status >= 300 && status <= 399) return tgreen;
 	if (status == 404) return tan;
@@ -142,18 +122,23 @@ inline const Palette& status_palette(int status) {
 	return none;
 }
 
+inline const char* reset() {
+	static constexpr auto c = CLEAR_COLOR;
+	return c.c_str();
+}
+
 // ---------------------------------------------------------------------------
 // Options / hooks.
 // ---------------------------------------------------------------------------
 
 // Render a body for the log given its content-type and raw bytes, or nullopt to
 // fall back to the built-in handling (raw text / escaped repr). A consumer injects
-// the fidelity it wants: Xapiand a MsgPack/JSON/YAML pretty-printer, a plain app a
-// JSON reindenter.
+// the fidelity it wants: Xapiand decodes to a MsgPack and renders it indented, a
+// plain app a JSON reindenter.
 using Prettify = std::function<std::optional<std::string>(std::string_view ct, std::string_view body)>;
 
 // Whether a content-type can be previewed inline on iTerm2. Default (when unset):
-// image/* plus the document set Xapiand allowed (pdf / eps / postscript / psd).
+// image/* plus the document set Xapiand's can_preview() allowed.
 using CanPreview = std::function<bool(std::string_view ct)>;
 
 inline bool default_can_preview(std::string_view ct) {
@@ -171,6 +156,7 @@ struct Options {
 	Prettify prettify;                     // structured-body pretty-printer (optional)
 	CanPreview can_preview;                // previewable content types (default set if unset)
 	std::size_t body_limit = 10 * 1024;    // bodies larger than this become "<body N>"
+	std::size_t capture_limit = 1024 * 1024;  // max response bytes the middleware retains
 	bool images = true;                    // iTerm2 inline image previews
 	// Log levels, matching Xapiand. Each request/response is one block logged at one
 	// level; the body detail (image vs prettify vs summary) is gated inside the
@@ -195,26 +181,35 @@ inline bool looks_texty(std::string_view ct) {
 }
 
 // The body block, reproducing Xapiand to_text()'s decode branch (log_request /
-// log_response always call it decoded): an iTerm2 image when previewable and
-// verbose enough, else a size summary for an oversized body, else the prettify
-// hook, else raw text (texty) or an escaped repr (binary).
-inline std::string render_body(std::string_view ct, std::string_view body, const Options& opts,
-	int log_level, std::string_view kind) {
-	if (body.empty()) return {};
+// log_response always call it decoded): an iTerm2 image (cppcodec base64) when
+// previewable and verbose enough, else a size summary for an oversized or
+// incompletely-captured body, else the prettify hook, else raw text (texty) or an
+// escaped repr (binary). `body` is what was retained (possibly capped at
+// Options::capture_limit); `total_size` is the true body length. When the two
+// differ (a streamed / very large body was truncated) or the body exceeds
+// body_limit, only a "<body N bytes>" summary is rendered -- the middleware never
+// prettifies or images a body it does not hold in full, so it stays O(capture_limit).
+inline std::string render_body(std::string_view ct, std::string_view body, std::size_t total_size,
+	const Options& opts, int log_level, std::string_view kind) {
+	if (total_size == 0) return {};
+	bool complete = body.size() >= total_size;   // we retained every byte
 	const CanPreview& cp = opts.can_preview ? opts.can_preview : CanPreview(default_can_preview);
-	if (opts.images && log_level > opts.image_level && cp(ct)) {
-		std::string b64 = b64encode(body);
-		// iTerm2 inline image (https://iterm2.com/documentation-images.html).
-		return "\033]1337;File=name=;inline=1;size=" + std::to_string(b64.size()) + ";width=20%:" + b64 + "\a";
+	if (opts.images && log_level > opts.image_level && complete && total_size <= opts.capture_limit && cp(ct)) {
+		// From https://iterm2.com/documentation-images.html (as Xapiand's to_text).
+		auto b64 = cppcodec::base64_rfc4648::encode(body.data(), body.size());
+		std::string out = strings::format("\033]1337;File=name=;inline=1;size={};width=20%:", b64.size());
+		out += b64;
+		out += '\a';
+		return out;
 	}
-	if (body.size() > opts.body_limit) {
-		return "<" + std::string(kind) + " " + human_bytes(body.size()) + ">";
+	if (total_size > opts.body_limit || !complete) {
+		return "<" + std::string(kind) + " " + strings::from_bytes(total_size) + ">";
 	}
 	if (opts.prettify) {
 		if (auto p = opts.prettify(ct, body)) return std::move(*p);
 	}
 	if (looks_texty(ct)) return std::string(body);
-	return "<" + std::string(kind) + " " + repr(body) + ">";
+	return "<" + std::string(kind) + " " + repr(body, true, '\'', 500) + ">";
 }
 
 // The header block: one "Key: Value" per line. The section color is applied once
@@ -236,40 +231,44 @@ inline std::string_view status_prefix(int status) {
 }
 inline int status_level(const Options& o, int status) {
 	if (status >= 500 && status <= 599) return o.level_5xx;
+	if (status == 404) return o.level_2xx;   // Xapiand keeps 404 at DEBUG, like 2xx/3xx
 	if (status >= 400 && status <= 499) return o.level_4xx;
 	return o.level_2xx;
-}
-
-// Indent continuation lines (after each newline) by 4 spaces; the first line
-// follows the emoji prefix. Matches Xapiand's string::indent(text, ' ', 4, false).
-inline std::string indent4(std::string_view s) {
-	std::string out;
-	out.reserve(s.size() + 16);
-	for (char c : s) { out += c; if (c == '\n') out += "    "; }
-	return out;
 }
 
 // ---------------------------------------------------------------------------
 // A ResponseWriter that captures the status, content-type, headers, and body while
 // forwarding everything to the real writer, so the middleware can render the
-// response after the inner handler completes.
-// ---------------------------------------------------------------------------
+// response after the inner handler completes. The retained body is capped at
+// `cap_` bytes (Options::capture_limit) while the true length is tracked in
+// `body_size`, so a large or streamed response never grows the middleware's memory
+// past the cap -- render_body summarizes anything it did not retain in full.
 class CapturingWriter : public http::ResponseWriter {
 	http::ResponseWriter& real_;
+	std::size_t cap_;
 public:
 	int code = 200;
 	std::string content_type = "text/plain; charset=utf-8";
 	http::Headers headers;
 	std::string body;
+	std::size_t body_size = 0;   // total bytes written (>= body.size() when capped)
 	bool started = false;
-	explicit CapturingWriter(http::ResponseWriter& r) : real_(r) {}
+	CapturingWriter(http::ResponseWriter& r, std::size_t cap) : real_(r), cap_(cap) {}
 	void status(int c) override { code = c; started = true; real_.status(c); }
 	void set_header(std::string_view n, std::string_view v) override {
 		if (http::iequal(n, "Content-Type")) content_type = std::string(v);
 		headers.emplace_back(std::string(n), std::string(v));
 		real_.set_header(n, v);
 	}
-	void write(std::string_view c) override { started = true; body.append(c); real_.write(c); }
+	void write(std::string_view c) override {
+		started = true;
+		body_size += c.size();
+		if (body.size() < cap_) {
+			std::size_t take = cap_ - body.size();
+			body.append(c.data(), c.size() < take ? c.size() : take);
+		}
+		real_.write(c);
+	}
 	void end() override { real_.end(); }
 	void set_close() override { real_.set_close(); }
 };
@@ -284,9 +283,10 @@ class AccessLog : public http::HttpHandler {
 	Options opts_;
 
 	// One request/response = one log call: an emoji prefix + the block, with
-	// continuation lines indented 4 spaces (Xapiand's log_request / log_response).
-	void emit(int level, std::string_view prefix, std::string&& block) {
-		std::string msg = std::string(prefix) + indent4(block);
+	// continuation lines indented 4 spaces (Xapiand's log_request / log_response,
+	// strings::indent(text, ' ', 4, false)).
+	void emit(int level, std::string_view prefix, const std::string& block) {
+		std::string msg = std::string(prefix) + strings::indent(block, ' ', 4, false);
 		Logging::do_log(false, std::chrono::steady_clock::now(), level >= ASYNC_LOG_LEVEL,
 			true, 0, level, std::exception_ptr{}, std::source_location::current(), std::move(msg));
 	}
@@ -298,10 +298,10 @@ class AccessLog : public http::HttpHandler {
 		std::string head = req.method + " " + req.path + " HTTP/" +
 			std::to_string(req.http_major) + "." + std::to_string(req.http_minor);
 		std::string block = p.head + head + "\n" + p.headers + headers_block(req.headers);
-		std::string b = render_body(req.content_type(), req.body, opts_, Logging::config.log_level, "body");
+		std::string b = render_body(req.content_type(), req.body, req.body.size(), opts_, Logging::config.log_level, "body");
 		if (!b.empty()) { block += p.text; block += b; }
 		block += reset();
-		emit(opts_.request_level, " \U0001F30E  ", std::move(block));   // 🌎
+		emit(opts_.request_level, " \U0001F30E  ", block);   // 🌎
 	}
 
 	// The response block: the status emoji + "HTTP/v STATUS reason" (status-colored),
@@ -313,10 +313,10 @@ class AccessLog : public http::HttpHandler {
 		std::string head = "HTTP/" + std::to_string(http_major) + "." + std::to_string(http_minor) +
 			" " + std::to_string(cap.code) + " " + http::reason_phrase(cap.code);
 		std::string block = p.head + head + "\n" + p.headers + headers_block(cap.headers);
-		std::string b = render_body(cap.content_type, cap.body, opts_, Logging::config.log_level, "body");
+		std::string b = render_body(cap.content_type, cap.body, cap.body_size, opts_, Logging::config.log_level, "body");
 		if (!b.empty()) { block += p.text; block += b; }
 		block += reset();
-		emit(level, status_prefix(cap.code), std::move(block));
+		emit(level, status_prefix(cap.code), block);
 	}
 
 public:
@@ -324,7 +324,7 @@ public:
 
 	void handle(const http::Request& req, http::ResponseWriter& response) override {
 		log_request(req);
-		CapturingWriter cap(response);
+		CapturingWriter cap(response, opts_.capture_limit);
 		try {
 			inner_.handle(req, cap);
 		} catch (...) {
@@ -341,9 +341,8 @@ public:
 	void on_error(std::exception_ptr error, const http::Request& req, http::ResponseWriter& response) override {
 		// The framework calls this after handle() threw. Capture the response the
 		// inner handler's error mapping writes, so the error response is logged too.
-		// If the inner handler leaves it unanswered, the framework writes a generic
-		// 500 fallback (past this capture), so reflect that in the log.
-		CapturingWriter cap(response);
+		// If the inner leaves it unanswered, reflect the framework's generic 500.
+		CapturingWriter cap(response, opts_.capture_limit);
 		inner_.on_error(error, req, cap);
 		if (!cap.started) {
 			cap.code = 500;
