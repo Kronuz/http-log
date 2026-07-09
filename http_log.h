@@ -310,10 +310,15 @@ class AccessLog : public http::HttpHandler {
 
 	// The response block: the status emoji + "HTTP/v STATUS reason" (status-colored),
 	// the response headers (timing rides in a Response-Time header the app sets), body.
-	// Takes the response by value views so it can render either a borrowed (zero-copy)
-	// buffered response or the copy fallback.
+	// The response block. `body_size` is the response's true length and defaults to
+	// body.size(); it differs only in the copy fallback, where `body` can be a prefix
+	// capped at capture_limit while the real body is larger (so render_body summarizes
+	// it as "<body N>" rather than printing a truncated body as if whole). The zero-copy
+	// path has the full body and omits it -- the view already carries the size.
 	void log_response(int code, const http::Headers& headers, std::string_view content_type,
-			std::string_view body, std::size_t body_size, int http_major, int http_minor) {
+			std::string_view body, int http_major, int http_minor,
+			std::size_t body_size = std::string_view::npos) {
+		if (body_size == std::string_view::npos) { body_size = body.size(); }
 		int level = status_level(opts_, code);
 		if (Logging::config.log_level < level) return;
 		const Palette& p = status_palette(code);
@@ -358,7 +363,7 @@ public:
 			}
 			std::string_view body = buf->response_body();
 			log_response(buf->response_code(), buf->response_headers(), buf->response_content_type(),
-				body, body.size(), req.http_major, req.http_minor);
+				body, req.http_major, req.http_minor);
 			return;
 		}
 
@@ -375,8 +380,8 @@ public:
 				L_EXC(std::string("unhandled exception in ") + req.method + " " + req.path);
 			}
 		}
-		log_response(cap.code, cap.headers, cap.content_type, cap.body, cap.body_size,
-			req.http_major, req.http_minor);
+		log_response(cap.code, cap.headers, cap.content_type, cap.body,
+			req.http_major, req.http_minor, cap.body_size);
 	}
 
 	// Not overridden on purpose: handle() catches and maps errors itself (so the
