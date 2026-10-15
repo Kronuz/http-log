@@ -1,5 +1,7 @@
 # http-log
 
+[![CI](https://github.com/Kronuz/http-log/actions/workflows/ci.yml/badge.svg)](https://github.com/Kronuz/http-log/actions/workflows/ci.yml)
+
 An [`http::HttpHandler`](https://github.com/Kronuz/http) middleware that logs every
 HTTP request and response through [Kronuz/logger](https://github.com/Kronuz/logger),
 in color. Wrap your application handler with it and each exchange is rendered to the
