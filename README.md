@@ -1,51 +1,31 @@
 # http-log
 
 [![CI](https://github.com/Kronuz/http-log/actions/workflows/ci.yml/badge.svg)](https://github.com/Kronuz/http-log/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
+![Header-only](https://img.shields.io/badge/header--only-yes-green.svg)
 
-An [`http::HttpHandler`](https://github.com/Kronuz/http) middleware that logs every
-HTTP request and response through [Kronuz/logger](https://github.com/Kronuz/logger),
-in color. Wrap your application handler with it and each exchange is rendered to the
-log: the request line and headers, the response status and timing, and the bodies,
-prettified. It is the request/response logging Xapiand used to have, pulled out into
-a library both Xapiand and other services can share.
+Colored request and response logs for any [http](https://github.com/Kronuz/http)
+service, in C++20. Wrap your handler, and every exchange is logged as one readable
+block: the request line, headers, status, timing, and a prettified body.
 
-## What it renders
+## ✨ Highlights
 
-- **A color per method and per status.** Requests are tinted by verb (GET/SEARCH/
-  COUNT/DUMP blue, POST/PUT/PATCH/UPDATE/UPSERT/RESTORE orange, DELETE red, COMMIT
-  teal, OPEN/CLOSE pink, OPTIONS/INFO/HEAD purple); responses by status (2xx green,
-  3xx teal, 404 tan, 4xx orange-red, 5xx red).
-- **Prettified bodies.** A pluggable hook renders the body for the log: a service
-  with a MsgPack/JSON/YAML decoder injects that; a plain app injects a JSON
-  reindenter. Unstructured text is shown as-is; binary is an escaped, capped `repr`.
-- **iTerm2 inline image previews.** Image (and PDF/EPS/PostScript/PSD) bodies are
-  previewed inline in the log on iTerm2, gated on verbosity.
-- **Large-body truncation.** Bodies over a limit become a `<body 2.4 MiB>` summary.
-- **The exception path.** A handler that throws is logged with its description and,
-  when the logger's backtrace hook is set, a stack trace, then handed to the inner
-  handler's own error-to-status mapping. The resulting response is logged too.
+- 🎨 **A color per method and per status**, from verbs like `GET` and `DELETE` to
+  `5xx`.
+- 🪄 **Prettified bodies** through your own hook (JSON, MsgPack, YAML); binary is
+  shown as an escaped, capped `repr`, and large bodies as a `<body 2.4 MiB>` summary.
+- 🖼️ **Inline image previews** on iTerm2 at high verbosity.
+- 🧯 **Exceptions logged with a stack trace** when the logger's backtrace hook is set.
+- 🔌 **Transparent**: forwards the whole `HttpHandler` seam, including streamed
+  bodies and offload, to your handler.
 
-Colors are [term-color](https://github.com/Kronuz/term-color) stacked escapes; the
-logger sink resolves them to the terminal (`--color` / `NO_COLOR` / depth). Each
-request or response is logged as **one block** (an emoji prefix plus the head line,
-headers, and body, indented), at a per-status level matching Xapiand: requests and
-2xx/3xx/404 at `DEBUG`, 4xx at `INFO`, 5xx at `NOTICE`, with inline images above
-that. A consumer can raise the levels to make the blocks visible at a lower
-verbosity (a demo does this).
+## 📦 Installation
 
-## Provenance
-
-Xapiand once rendered each request and response with `Request::to_text` /
-`Response::to_text` (per-method and per-status palettes, prettified JSON/YAML/MsgPack
-bodies, iTerm2 image previews, truncation). That code was deleted in the decomposition
-(Xapiand commit `602dcdd33`, "delete Xapiand's Response class"). This library recovers
-that behavior generically: it works over the `http::Request` seam and a body-prettify
-hook, so it carries no dependency on Xapiand's types, and Xapiand adopts it by wrapping
-its handler and injecting its MsgPack pretty-printer.
-
-## Install
-
-CMake with `FetchContent`:
+Requires a C++20 compiler and CMake 3.14 or newer. It brings
+[http](https://github.com/Kronuz/http) and [logger](https://github.com/Kronuz/logger).
+CI builds it on Linux (x86_64, arm64), macOS (arm64, x86_64), and FreeBSD, plus ASan,
+UBSan, and TSan builds.
 
 ```cmake
 include(FetchContent)
@@ -54,47 +34,72 @@ FetchContent_Declare(http_log
   GIT_TAG        main)
 FetchContent_MakeAvailable(http_log)
 
-target_link_libraries(your_target PRIVATE http_log::http_log)
+target_link_libraries(my_app PRIVATE http_log::http_log)
 ```
 
-Header-only (`http_log.h`). It brings [http](https://github.com/Kronuz/http) (the
-`HttpHandler` seam) and [logger](https://github.com/Kronuz/logger) (which brings
-term-color). Requires C++20.
-
-## Usage
-
-Wrap your handler; the middleware forwards the whole `HttpHandler` seam
-(`on_request_body` / `wants_body_stream` / `create_extension` / `should_offload` /
-`on_error`) to it, so it is transparent to the framework.
+## 🚀 Quick start
 
 ```cpp
+#include "http_asio.h"
 #include "http_log.h"
 
-MyApp app;                                   // your http::HttpHandler
+#include <chrono>
+#include <thread>
 
-http_log::Options opts;
-opts.prettify = [](std::string_view ct, std::string_view body)
-    -> std::optional<std::string> {
-    if (ct.find("json") != std::string_view::npos) return reindent_json(body);
-    return std::nullopt;                      // fall back to raw text / repr
+struct App : http::HttpHandler {
+	void handle(const http::Request&, http::ResponseWriter& resp) override { resp.send(200, "hello\n"); }
 };
 
-http_log::AccessLog access(app, std::move(opts));
-
-// Point the logger's backtrace hook at your traceback provider so a thrown
-// handler logs a stack trace (optional):
-Logging::hooks.backtrace = [] { return traceback::format(""); };
-
-http::HttpAsioService service(access, reactors, workers, queue_limit);
-service.start(port);
+int main() {
+	App app;
+	http_log::AccessLog access(app);   // default options
+	http::HttpAsioService service(access, /*reactors=*/2, /*workers=*/2, /*queue_limit=*/64);
+	service.start(8080);
+	std::this_thread::sleep_for(std::chrono::minutes(1));
+	service.stop();
+}
 ```
 
-`Options`: `prettify` (the body hook), `can_preview` (which content-types preview
-inline; defaults to image/* plus the document set), `body_limit` (default 10 KiB),
-`images` (on by default), and the per-status levels (`request_level` / `level_2xx` /
-`level_4xx` / `level_5xx`, Xapiand-faithful DEBUG/DEBUG/INFO/NOTICE, plus
-`image_level`).
+Requests log at `DEBUG`; raise the logger's level, or the `Options` levels, to see
+them. [prism](https://github.com/Kronuz/prism) is a complete example.
 
-## License
+## ⚙️ Configuration
 
-MIT, Copyright (c) 2015-2026 Dubalu LLC. See the per-file header.
+| `http_log::Options` | Default | Meaning |
+|---|---|---|
+| `prettify` | none | `(content_type, body) -> optional<string>` for structured bodies |
+| `can_preview` | images and documents | which content types preview inline |
+| `body_limit` | 10 KiB | larger bodies log as a size summary |
+| `capture_limit` | 1 MiB | most response bytes the middleware retains |
+| `images` | `true` | iTerm2 inline previews |
+| `request_level` | `LOG_DEBUG` | the request block |
+| `level_2xx` | `LOG_DEBUG` | 2xx, 3xx, and 404 responses |
+| `level_4xx` / `level_5xx` | `LOG_INFO` / `LOG_NOTICE` | error responses |
+| `image_level` | `LOG_DEBUG + 1` | previews appear above this level |
+
+## 🎯 When to use it
+
+- ✅ Development and debugging of an http service; a readable access log.
+- ❌ Machine-parsed access logs: the output is for people (colors, indentation).
+
+## 📚 Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md): the palettes, levels, and exception path, and
+  the Xapiand rendering it recovers.
+- [AGENTS.md](AGENTS.md): file map, streaming, and invariants.
+
+## 🛠️ Building and testing
+
+```sh
+cmake -B build && cmake --build build && ctest --test-dir build
+```
+
+## 🤝 Contributing
+
+Issues and pull requests are welcome. Read [AGENTS.md](AGENTS.md) first. CI must
+pass on every platform.
+
+## 📄 License
+
+MIT, Copyright (c) 2015-2019 Dubalu LLC. See [LICENSE](LICENSE). Extracted from
+[Xapiand](https://github.com/Kronuz/Xapiand).

@@ -1,6 +1,6 @@
 # AGENTS
 
-Working notes for `http-log`. For usage read `README.md`.
+Working notes for `http-log`. For usage read `README.md`; for rendering and provenance, `ARCHITECTURE.md`.
 
 ## What this is
 
