@@ -72,6 +72,7 @@ them. [prism](https://github.com/Kronuz/prism) is a complete example.
 | `body_limit` | 10 KiB | larger bodies log as a size summary |
 | `capture_limit` | 1 MiB | most response bytes the middleware retains |
 | `images` | `true` | iTerm2 inline previews |
+| `client_colors` | `false` | lead each request with its client's address (`Request::remote`), in a color stable per address |
 | `request_level` | `LOG_DEBUG` | the request block |
 | `level_2xx` | `LOG_DEBUG` | 2xx, 3xx, and 404 responses |
 | `level_4xx` / `level_5xx` | `LOG_INFO` / `LOG_NOTICE` | error responses |

@@ -188,10 +188,33 @@ int main() {
 		MockWriter w;
 		cerr_access.handle(req, w);
 	}
+	// client_colors: the request line leads with the client's address; without it, not.
+	{
+		Options copts;
+		copts.client_colors = true;
+		AccessLog colored(echo, std::move(copts));
+		http::Request req;
+		req.method = "GET";
+		req.path = "/colored";
+		req.remote = "10.0.0.7";
+		MockWriter w;
+		colored.handle(req, w);
+		http::Request plain;
+		plain.method = "GET";
+		plain.path = "/uncolored";
+		plain.remote = "10.0.0.8";
+		access.handle(plain, w);
+	}
 
 	Logging::finish();
 	std::string logged = cap->take();
 	CHECK(contains(logged, "GET /hello HTTP/1.1"));      // request head
+	{  // client_colors leads the request line with the address (escapes between them)
+		const auto addr = logged.find("10.0.0.7 "), line = logged.find("GET /colored HTTP/1.1");
+		CHECK(addr != std::string::npos && line != std::string::npos && addr < line &&
+			logged.find('\n', addr) > line);
+	}
+	CHECK(!contains(logged, "10.0.0.8"));                 // off by default
 	CHECK(contains(logged, "Accept: application/json"));  // request header
 	CHECK(contains(logged, "HTTP/1.1 200 OK"));           // response head
 	CHECK(contains(logged, "\"ok\":true"));               // prettified response body

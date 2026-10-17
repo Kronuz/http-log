@@ -26,6 +26,7 @@
 #include "http_handler.h"                // http::HttpHandler / Request / ResponseWriter
 #include "http_message.h"                // http::reason_phrase / http::iequal / http::Headers
 #include "colors.h"                      // term-color: rgb()/rgba()/brgb()/NO_COLOR/CLEAR_COLOR
+#include "color_tools.hh"                // term-color: name_color, a stable color per client address
 #include "logger.h"                      // Kronuz/logger: Logging, LogConfig, the L_* macros
 #include "repr.hh"                       // Kronuz/repr: repr() for binary bodies
 #include "strings.hh"                    // Kronuz/strings: from_bytes / indent / format
@@ -158,6 +159,7 @@ struct Options {
 	std::size_t body_limit = 10 * 1024;    // bodies larger than this become "<body N>"
 	std::size_t capture_limit = 1024 * 1024;  // max response bytes the middleware retains
 	bool images = true;                    // iTerm2 inline image previews
+	bool client_colors = false;            // lead each request with its client's address, in that address's color
 	// Log levels, matching Xapiand. Each request/response is one block logged at one
 	// level; the body detail (image vs prettify vs summary) is gated inside the
 	// renderer by the running log level. A consumer can raise these to make the
@@ -301,7 +303,9 @@ class AccessLog : public http::HttpHandler {
 		const Palette& p = method_palette(req.method);
 		std::string head = req.method + " " + req.path + " HTTP/" +
 			std::to_string(req.http_major) + "." + std::to_string(req.http_minor);
-		std::string block = p.head + head + "\n" + p.headers + headers_block(req.headers);
+		std::string client;  // the same address gets the same color on every host (term-color's name_color)
+		if (opts_.client_colors && !req.remote.empty()) { client = name_color(req.remote).ansi() + req.remote + " "; }
+		std::string block = client + p.head + head + "\n" + p.headers + headers_block(req.headers);
 		std::string b = render_body(req.content_type(), req.body, req.body.size(), opts_, Logging::config.log_level, "body");
 		if (!b.empty()) { block += p.text; block += b; }
 		block += reset();
