@@ -63,6 +63,12 @@ int main() {
 Requests log at `DEBUG`; raise the logger's level, or the `Options` levels, to see
 them. [prism](https://github.com/Kronuz/prism) is a complete example.
 
+Set `Options::metadata_only = true` for method, escaped path and status blocks without headers, bodies, query values, image previews or exception descriptions. Method and path labels are bounded to 32 and 256 input bytes. Response blocks include the handler's body byte count. The default retains Xapiand's detailed rendering. Logging/rendering failures do not replace a successful application response.
+
+`examples/demo.cc` shows metadata-only logging without a network listener. Build the standalone `http_log_demo` target and run it in a terminal to see the shared method/status colors; redirected output follows the logger's normal color policy.
+
+`AccessLog` currently supports synchronous responses only. Do not wrap a handler that transfers response ownership through `defer()` or `stream()`; those require transport completion observation rather than logging when `handle()` returns. The synchronous response block describes the handler's response before transport transforms, not confirmed socket delivery.
+
 ## ⚙️ Configuration
 
 | `http_log::Options` | Default | Meaning |

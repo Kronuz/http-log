@@ -52,11 +52,12 @@ target_compile_features(http_log INTERFACE cxx_std_20)
 target_link_libraries(http_log INTERFACE http::http logger::logger strings::strings repr::repr)
 add_library(http_log::http_log ALIAS http_log)
 
-# The test builds only when this repo is the top-level project (a consumer vendoring
-# it via FetchContent won't build it).
+# Tests and the demo build only for the standalone project.
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   enable_testing()
   add_executable(http_log_test test/test.cc)
   target_link_libraries(http_log_test PRIVATE http_log)
   add_test(NAME http_log COMMAND http_log_test)
+  add_executable(http_log_demo examples/demo.cc)
+  target_link_libraries(http_log_demo PRIVATE http_log)
 endif()

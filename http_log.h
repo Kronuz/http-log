@@ -169,6 +169,7 @@ struct Options {
 	int level_4xx = LOG_INFO;              // 4xx responses
 	int level_5xx = LOG_NOTICE;            // 5xx responses
 	int image_level = LOG_DEBUG + 1;       // above this: previewable bodies as iTerm2 images
+	bool metadata_only = false;           // omit headers, bodies, query values and exception details
 };
 
 // ---------------------------------------------------------------------------
@@ -252,26 +253,40 @@ inline int status_level(const Options& o, int status) {
 class CapturingWriter : public http::ResponseWriter {
 	http::ResponseWriter& real_;
 	std::size_t cap_;
+	bool metadata_only_, capture_enabled_ = true;
+	void discard_capture() noexcept {
+		capture_enabled_ = false;
+		body.clear();
+		headers.clear();
+		content_type.clear();
+	}
 public:
 	int code = 200;
-	std::string content_type = "text/plain; charset=utf-8";
+	std::string content_type;
 	http::Headers headers;
 	std::string body;
 	std::size_t body_size = 0;   // total bytes written (>= body.size() when capped)
 	bool started = false;
-	CapturingWriter(http::ResponseWriter& r, std::size_t cap) : real_(r), cap_(cap) {}
+	CapturingWriter(http::ResponseWriter& r, std::size_t cap, bool metadata_only = false)
+		: real_(r), cap_(metadata_only ? 0 : cap), metadata_only_(metadata_only) {}
 	void status(int c) override { code = c; started = true; real_.status(c); }
 	void set_header(std::string_view n, std::string_view v) override {
-		if (http::iequal(n, "Content-Type")) content_type = std::string(v);
-		headers.emplace_back(std::string(n), std::string(v));
 		real_.set_header(n, v);
+		if (!metadata_only_ && capture_enabled_) {
+			try {
+				if (http::iequal(n, "Content-Type")) content_type = std::string(v);
+				headers.emplace_back(std::string(n), std::string(v));
+			} catch (...) { discard_capture(); }
+		}
 	}
 	void write(std::string_view c) override {
 		started = true;
 		body_size += c.size();
-		if (body.size() < cap_) {
-			std::size_t take = cap_ - body.size();
-			body.append(c.data(), c.size() < take ? c.size() : take);
+		if (capture_enabled_ && body.size() < cap_) {
+			try {
+				std::size_t take = cap_ - body.size();
+				body.append(c.data(), c.size() < take ? c.size() : take);
+			} catch (...) { discard_capture(); }
 		}
 		real_.write(c);
 	}
@@ -301,6 +316,15 @@ class AccessLog : public http::HttpHandler {
 	void log_request(const http::Request& req) {
 		if (Logging::config.log_level < opts_.request_level) return;
 		const Palette& p = method_palette(req.method);
+		if (opts_.metadata_only) {
+			auto path = std::string_view(req.path).substr(0, 256);
+			path = path.substr(0, path.find_first_of("?#"));
+			std::string block = std::string(p.head) + repr(std::string_view(req.method).substr(0, 32), true, '\0') +
+				" " + repr(path.substr(0, 256), true, '\0') + " HTTP/" +
+				std::to_string(req.http_major) + "." + std::to_string(req.http_minor) + reset();
+			emit(opts_.request_level, " \U0001F30E  ", block);
+			return;
+		}
 		std::string head = req.method + " " + req.path + " HTTP/" +
 			std::to_string(req.http_major) + "." + std::to_string(req.http_minor);
 		std::string client;  // the same address gets the same color on every host (term-color's name_color)
@@ -328,6 +352,11 @@ class AccessLog : public http::HttpHandler {
 		const Palette& p = status_palette(code);
 		std::string head = "HTTP/" + std::to_string(http_major) + "." + std::to_string(http_minor) +
 			" " + std::to_string(code) + " " + http::reason_phrase(code);
+		if (opts_.metadata_only) {
+			emit(level, status_prefix(code), std::string(p.head) + head + " (" +
+				std::to_string(body_size) + " bytes)" + reset());
+			return;
+		}
 		std::string block = p.head + head + "\n" + p.headers + headers_block(headers);
 		std::string b = render_body(content_type, body, body_size, opts_, Logging::config.log_level, "body");
 		if (!b.empty()) { block += p.text; block += b; }
@@ -339,7 +368,7 @@ public:
 	explicit AccessLog(http::HttpHandler& inner, Options opts = {}) : inner_(inner), opts_(std::move(opts)) {}
 
 	void handle(const http::Request& req, http::ResponseWriter& response) override {
-		log_request(req);
+		try { log_request(req); } catch (...) {}
 
 		// Zero-copy path: a buffered writer retains its response, so log it by reference
 		// -- no second copy of the headers/body. The reactor's AsioResponseWriter is
@@ -361,18 +390,21 @@ public:
 				// Only a genuine 5xx (or unanswered request) is unhandled: log it with a
 				// backtrace at CRIT. A 4xx that on_error mapped is handled, not "unhandled"
 				// -- the response block below carries its status, so don't cry wolf.
-				if (buf->response_code() >= 500) {
-					L_EXC(std::string("unhandled exception in ") + req.method + " " + req.path);
+				if (!opts_.metadata_only && buf->response_code() >= 500) {
+					try { L_EXC(std::string("unhandled exception in ") + req.method + " " + req.path); }
+					catch (...) {}
 				}
 			}
-			std::string_view body = buf->response_body();
-			log_response(buf->response_code(), buf->response_headers(), buf->response_content_type(),
-				body, req.http_major, req.http_minor);
+			try {
+				std::string_view body = buf->response_body();
+				log_response(buf->response_code(), buf->response_headers(), buf->response_content_type(),
+					body, req.http_major, req.http_minor);
+			} catch (...) {}
 			return;
 		}
 
 		// Copy fallback: the writer does not retain its response, so capture it.
-		CapturingWriter cap(response, opts_.capture_limit);
+		CapturingWriter cap(response, opts_.metadata_only ? 0 : opts_.capture_limit, opts_.metadata_only);
 		try {
 			inner_.handle(req, cap);
 		} catch (...) {
@@ -380,12 +412,16 @@ public:
 				inner_.on_error(std::current_exception(), req, cap);
 			} catch (...) {}
 			if (!cap.started) { cap.send(500, "Internal Server Error\n"); }
-			if (cap.code >= 500) {
-				L_EXC(std::string("unhandled exception in ") + req.method + " " + req.path);
+			if (!opts_.metadata_only && cap.code >= 500) {
+				try { L_EXC(std::string("unhandled exception in ") + req.method + " " + req.path); }
+				catch (...) {}
 			}
 		}
-		log_response(cap.code, cap.headers, cap.content_type, cap.body,
-			req.http_major, req.http_minor, cap.body_size);
+		try {
+			log_response(cap.code, cap.headers, cap.content_type.empty() ?
+				std::string_view("text/plain; charset=utf-8") : std::string_view(cap.content_type), cap.body,
+				req.http_major, req.http_minor, cap.body_size);
+		} catch (...) {}
 	}
 
 	// Not overridden on purpose: handle() catches and maps errors itself (so the

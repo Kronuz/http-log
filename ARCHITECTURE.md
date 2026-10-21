@@ -2,6 +2,8 @@
 
 What the middleware renders, at which levels, and where the behavior comes from.
 
+The optional metadata-only mode preserves the method/status palettes while omitting raw headers, bodies, query values, images and exception descriptions. It bounds and escapes request labels before rendering. Default detailed rendering is unchanged. Diagnostic rendering failures are contained independently of application error mapping.
+
 ## What it renders
 
 - **A color per method and per status.** Requests are tinted by verb (GET/SEARCH/

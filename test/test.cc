@@ -206,8 +206,103 @@ int main() {
 		access.handle(plain, w);
 	}
 
+	{
+		Options metadata;
+		metadata.metadata_only = true;
+		AccessLog safe(echo, metadata);
+		http::Request req;
+		req.method = "POST";
+		req.path = "/metadata?private-query";
+		req.headers = {{"Authorization", "private-token"}, {"Cookie", "private-cookie"}};
+		req.body = "private-body";
+		MockWriter writer;
+		safe.handle(req, writer);
+		req.path = "/escaped\r\n\x1b";
+		safe.handle(req, writer);
+		req.path = "/" + std::string(256, 'a') + "private-tail";
+		safe.handle(req, writer);
+		CapturingWriter metadata_writer(writer, 1024, true);
+		metadata_writer.set_header("Content-Type", "private-type");
+		metadata_writer.set_header("Authorization", "private-header");
+		metadata_writer.write(req.body);
+		CHECK(metadata_writer.headers.empty());
+		CHECK(metadata_writer.content_type.empty());
+		CHECK(metadata_writer.body.empty());
+		CHECK(metadata_writer.body_size == req.body.size());
+		struct PrivateError : http::HttpHandler {
+			void handle(const http::Request&, http::ResponseWriter&) override {
+				throw std::runtime_error("private-exception");
+			}
+		} failure;
+		AccessLog errors(failure, metadata);
+		errors.handle(req, writer);
+	}
+	{
+		Options failing;
+		failing.prettify = [](std::string_view, std::string_view) -> std::optional<std::string> {
+			throw std::runtime_error("renderer refused");
+		};
+		AccessLog diagnostic(echo, failing);
+		http::Request req;
+		req.method = "GET";
+		req.path = "/renderer-failure";
+		struct StatusWriter : MockWriter {
+			int code = 0;
+			void status(int value) override { code = value; }
+		} writer;
+		diagnostic.handle(req, writer);
+		CHECK(writer.code == 200);
+	}
+	{
+		struct BufferedWriter : MockWriter, http::BufferedResponse {
+			int code = 0;
+			bool fail_observation = false;
+			http::Headers headers;
+			std::string body;
+			void status(int value) override { code = value; }
+			void set_header(std::string_view name, std::string_view value) override {
+				headers.emplace_back(name, value);
+			}
+			void write(std::string_view value) override { body += value; }
+			int response_code() const override { return code; }
+			bool response_started() const override { return code != 0; }
+			const http::Headers& response_headers() const override { return headers; }
+			std::string_view response_body() const override {
+				if (fail_observation) throw std::runtime_error("observation refused");
+				return body;
+			}
+			std::string_view response_content_type() const override { return "application/json"; }
+		} writer;
+		Options metadata;
+		metadata.metadata_only = true;
+		AccessLog buffered(echo, metadata);
+		http::Request req;
+		req.method = "POST";
+		req.path = "/buffered-metadata?buffered-query-secret";
+		req.body = "buffered-body-secret";
+		req.headers = {{"Authorization", "buffered-token-secret"}};
+		buffered.handle(req, writer);
+		CHECK(writer.code == 200);
+		CHECK(writer.body == req.body);
+		writer.fail_observation = true;
+		buffered.handle(req, writer);
+		CHECK(writer.code == 200);
+	}
 	Logging::finish();
 	std::string logged = cap->take();
+	CHECK(contains(logged, "/metadata"));
+	CHECK(!contains(logged, "private-query"));
+	CHECK(!contains(logged, "private-token"));
+	CHECK(!contains(logged, "private-cookie"));
+	CHECK(!contains(logged, "private-body"));
+	CHECK(!contains(logged, "private-exception"));
+	CHECK(!contains(logged, "private-tail"));
+	CHECK(contains(logged, "/buffered-metadata"));
+	CHECK(!contains(logged, "buffered-query-secret"));
+	CHECK(!contains(logged, "buffered-body-secret"));
+	CHECK(!contains(logged, "buffered-token-secret"));
+	CHECK(contains(logged, "/escaped\\r\\n\\x1b"));
+	CHECK(!contains(logged, "/escaped\r\n"));
 	CHECK(contains(logged, "GET /hello HTTP/1.1"));      // request head
 	{  // client_colors leads the request line with the address (escapes between them)
 		const auto addr = logged.find("10.0.0.7 "), line = logged.find("GET /colored HTTP/1.1");
