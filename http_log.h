@@ -267,6 +267,7 @@ public:
 	std::string body;
 	std::size_t body_size = 0;   // total bytes written (>= body.size() when capped)
 	bool started = false;
+	bool ended = false;
 	CapturingWriter(http::ResponseWriter& r, std::size_t cap, bool metadata_only = false)
 		: real_(r), cap_(metadata_only ? 0 : cap), metadata_only_(metadata_only) {}
 	void status(int c) override { code = c; started = true; real_.status(c); }
@@ -290,7 +291,7 @@ public:
 		}
 		real_.write(c);
 	}
-	void end() override { real_.end(); }
+	void end() override { real_.end(); ended = true; }
 	void set_close() override { real_.set_close(); }
 };
 
@@ -384,9 +385,13 @@ public:
 				// on_error seam turns an expected client error into a clean 4xx); if it
 				// leaves the response unanswered, write the generic 500 ourselves.
 				try {
-					inner_.on_error(std::current_exception(), req, response);
+					if (!buf->response_ended()) inner_.on_error(std::current_exception(), req, response);
 				} catch (...) {}
-				if (!buf->response_started()) { response.send(500, "Internal Server Error\n"); }
+				if (!buf->response_ended()) {
+					response.status(500);
+					response.write("Internal Server Error\n");
+					response.end();
+				}
 				// Only a genuine 5xx (or unanswered request) is unhandled: log it with a
 				// backtrace at CRIT. A 4xx that on_error mapped is handled, not "unhandled"
 				// -- the response block below carries its status, so don't cry wolf.
@@ -409,9 +414,13 @@ public:
 			inner_.handle(req, cap);
 		} catch (...) {
 			try {
-				inner_.on_error(std::current_exception(), req, cap);
+				if (!cap.ended) inner_.on_error(std::current_exception(), req, cap);
 			} catch (...) {}
-			if (!cap.started) { cap.send(500, "Internal Server Error\n"); }
+			if (!cap.ended) {
+				cap.status(500);
+				cap.write("Internal Server Error\n");
+				cap.end();
+			}
 			if (!opts_.metadata_only && cap.code >= 500) {
 				try { L_EXC(std::string("unhandled exception in ") + req.method + " " + req.path); }
 				catch (...) {}

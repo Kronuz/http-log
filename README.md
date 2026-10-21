@@ -69,6 +69,8 @@ Set `Options::metadata_only = true` for method, escaped path and status blocks w
 
 `AccessLog` currently supports synchronous responses only. Do not wrap a handler that transfers response ownership through `defer()` or `stream()`; those require transport completion observation rather than logging when `handle()` returns. The synchronous response block describes the handler's response before transport transforms, not confirmed socket delivery.
 
+Error mapping follows successful `end()`, not whether a status was set. An unfinished handler that throws gets its normal error mapping and a 500 fallback if mapping remains unfinished; exceptions after completion do not remap the response. Accurate buffered completion requires the HTTP version pinned here; custom buffered writers should override `response_ended()` rather than rely on its legacy started approximation.
+
 ## ⚙️ Configuration
 
 | `http_log::Options` | Default | Meaning |
