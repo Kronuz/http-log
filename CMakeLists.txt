@@ -13,7 +13,7 @@ include(FetchContent)
 # plus Request / ResponseWriter / reason_phrase. Each dependency is guarded so a
 # consumer that already brought it in is reused rather than fetched twice.
 if(NOT TARGET http::http)
-  FetchContent_Declare(http_lib GIT_REPOSITORY https://github.com/Kronuz/http.git GIT_TAG c05b4d385bd0bcf00eaae4011fe4d34db9abdf99)
+  FetchContent_Declare(http_lib GIT_REPOSITORY https://github.com/Kronuz/http.git GIT_TAG 345cfe0d7b4857e1ca81e784b56978fbdc1911eb)
   FetchContent_MakeAvailable(http_lib)
 endif()
 
