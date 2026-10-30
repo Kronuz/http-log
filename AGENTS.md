@@ -44,7 +44,7 @@ rendering it indented) and the previewable-type set are hooks (`Options::prettif
 
 - **The middleware never buffers a whole request or response.** A streamed request
   body (a handler that returned true from `wants_body_stream`, e.g. Xapiand's
-  RESTORE) leaves `Request::body` empty and flows through `Request::body_reader`, so
+  RESTORE) leaves `Request::body` empty and flows through `Request::body_stream`, so
   `log_request` renders the head + headers with no body: nothing is accumulated. The
   response is captured through `CapturingWriter`, which retains at most
   `Options::capture_limit` bytes (default 1 MiB) while tracking the true length in
