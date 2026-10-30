@@ -368,7 +368,7 @@ class AccessLog : public http::HttpHandler {
 public:
 	explicit AccessLog(http::HttpHandler& inner, Options opts = {}) : inner_(inner), opts_(std::move(opts)) {}
 
-	void handle(const http::Request& req, http::ResponseWriter& response) override {
+	asio::awaitable<void> handle(http::Request& req, http::ResponseWriter& response) override {
 		try { log_request(req); } catch (...) {}
 
 		// Zero-copy path: a buffered writer retains its response, so log it by reference
@@ -379,7 +379,7 @@ public:
 		// through on_error: there is no wrapper to destroy on the throw path.
 		if (auto* buf = dynamic_cast<http::BufferedResponse*>(&response)) {
 			try {
-				inner_.handle(req, response);
+				co_await inner_.handle(req, response);
 			} catch (...) {
 				// Let the inner handler map the exception to a response first (its
 				// on_error seam turns an expected client error into a clean 4xx); if it
@@ -405,13 +405,13 @@ public:
 				log_response(buf->response_code(), buf->response_headers(), buf->response_content_type(),
 					body, req.http_major, req.http_minor);
 			} catch (...) {}
-			return;
+			co_return;
 		}
 
 		// Copy fallback: the writer does not retain its response, so capture it.
 		CapturingWriter cap(response, opts_.metadata_only ? 0 : opts_.capture_limit, opts_.metadata_only);
 		try {
-			inner_.handle(req, cap);
+			co_await inner_.handle(req, cap);
 		} catch (...) {
 			try {
 				if (!cap.ended) inner_.on_error(std::current_exception(), req, cap);
@@ -445,9 +445,6 @@ public:
 	}
 	std::unique_ptr<http::RequestExtension> create_extension(const http::Request& req) override {
 		return inner_.create_extension(req);
-	}
-	bool should_offload(const http::Request& req) const override {
-		return inner_.should_offload(req);
 	}
 };
 

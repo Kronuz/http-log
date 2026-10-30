@@ -31,10 +31,20 @@ struct CaptureSink : Logger {
 
 // A trivial handler: echoes the request body (or "ok") as application/json, or
 // throws on /boom so the exception + error paths can be exercised.
+// Runs a coroutine to completion on a private loop.
+static void drive(asio::awaitable<void> task) {
+	asio::io_context io;
+	std::exception_ptr failure;
+	asio::co_spawn(io, std::move(task), [&](std::exception_ptr e) { failure = e; });
+	io.run();
+	if (failure) { std::rethrow_exception(failure); }
+}
+
 struct Echo : http::HttpHandler {
-	void handle(const http::Request& req, http::ResponseWriter& resp) override {
+	asio::awaitable<void> handle(http::Request& req, http::ResponseWriter& resp) override {
 		if (req.path == "/boom") { throw std::runtime_error("boom"); }
 		resp.send(200, req.body.empty() ? std::string("{\"ok\":true}") : req.body, "application/json");
+		co_return;
 	}
 };
 
@@ -42,8 +52,9 @@ struct Echo : http::HttpHandler {
 // error). The middleware must map + log the response but must NOT cry "unhandled
 // exception" -- that CRIT line is reserved for 5xx / unanswered requests.
 struct ClientErr : http::HttpHandler {
-	void handle(const http::Request& /*req*/, http::ResponseWriter& /*resp*/) override {
+	asio::awaitable<void> handle(http::Request& /*req*/, http::ResponseWriter& /*resp*/) override {
 		throw std::runtime_error("bad input");
+		co_return;
 	}
 	void on_error(std::exception_ptr, const http::Request& /*req*/, http::ResponseWriter& resp) override {
 		resp.send(404, std::string("{\"error\":\"not found\"}"), "application/json");
@@ -166,7 +177,7 @@ int main() {
 		req.path = "/hello";
 		req.headers = {{"Accept", "application/json"}};
 		MockWriter w;
-		access.handle(req, w);
+		drive(access.handle(req, w));
 	}
 	// The exception + error path: handle() catches, runs the inner on_error with the
 	// same writer, writes a generic 500 fallback (Echo has no on_error), and logs it.
@@ -175,7 +186,7 @@ int main() {
 		req.method = "GET";
 		req.path = "/boom";
 		MockWriter w;
-		access.handle(req, w);   // maps the error internally; must not throw
+		drive(access.handle(req, w));   // maps the error internally; must not throw
 	}
 	// A client error: the handler throws, but its on_error maps it to a 404. The
 	// middleware must log the 404 response and must NOT log an "unhandled exception".
@@ -186,7 +197,7 @@ int main() {
 		req.method = "GET";
 		req.path = "/missing";
 		MockWriter w;
-		cerr_access.handle(req, w);
+		drive(cerr_access.handle(req, w));
 	}
 	// client_colors: the request line leads with the client's address; without it, not.
 	{
@@ -198,12 +209,12 @@ int main() {
 		req.path = "/colored";
 		req.remote = "10.0.0.7";
 		MockWriter w;
-		colored.handle(req, w);
+		drive(colored.handle(req, w));
 		http::Request plain;
 		plain.method = "GET";
 		plain.path = "/uncolored";
 		plain.remote = "10.0.0.8";
-		access.handle(plain, w);
+		drive(access.handle(plain, w));
 	}
 
 	{
@@ -216,11 +227,11 @@ int main() {
 		req.headers = {{"Authorization", "private-token"}, {"Cookie", "private-cookie"}};
 		req.body = "private-body";
 		MockWriter writer;
-		safe.handle(req, writer);
+		drive(safe.handle(req, writer));
 		req.path = "/escaped\r\n\x1b";
-		safe.handle(req, writer);
+		drive(safe.handle(req, writer));
 		req.path = "/" + std::string(256, 'a') + "private-tail";
-		safe.handle(req, writer);
+		drive(safe.handle(req, writer));
 		CapturingWriter metadata_writer(writer, 1024, true);
 		metadata_writer.set_header("Content-Type", "private-type");
 		metadata_writer.set_header("Authorization", "private-header");
@@ -230,12 +241,13 @@ int main() {
 		CHECK(metadata_writer.body.empty());
 		CHECK(metadata_writer.body_size == req.body.size());
 		struct PrivateError : http::HttpHandler {
-			void handle(const http::Request&, http::ResponseWriter&) override {
+			asio::awaitable<void> handle(http::Request&, http::ResponseWriter&) override {
 				throw std::runtime_error("private-exception");
+				co_return;
 			}
 		} failure;
 		AccessLog errors(failure, metadata);
-		errors.handle(req, writer);
+		drive(errors.handle(req, writer));
 	}
 	{
 		Options failing;
@@ -250,7 +262,7 @@ int main() {
 			int code = 0;
 			void status(int value) override { code = value; }
 		} writer;
-		diagnostic.handle(req, writer);
+		drive(diagnostic.handle(req, writer));
 		CHECK(writer.code == 200);
 	}
 	{
@@ -281,11 +293,11 @@ int main() {
 		req.path = "/buffered-metadata?buffered-query-secret";
 		req.body = "buffered-body-secret";
 		req.headers = {{"Authorization", "buffered-token-secret"}};
-		buffered.handle(req, writer);
+		drive(buffered.handle(req, writer));
 		CHECK(writer.code == 200);
 		CHECK(writer.body == req.body);
 		writer.fail_observation = true;
-		buffered.handle(req, writer);
+		drive(buffered.handle(req, writer));
 		CHECK(writer.code == 200);
 	}
 	Logging::finish();

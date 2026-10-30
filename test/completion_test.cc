@@ -7,13 +7,23 @@ static void require(bool condition) {
 	if (!condition) throw std::runtime_error("HTTP logging completion regression");
 }
 
+// Runs a coroutine to completion on a private loop.
+static void drive(asio::awaitable<void> task) {
+	asio::io_context io;
+	std::exception_ptr failure;
+	asio::co_spawn(io, std::move(task), [&](std::exception_ptr e) { failure = e; });
+	io.run();
+	if (failure) { std::rethrow_exception(failure); }
+}
+
 struct Application : http::HttpHandler {
 	unsigned mappings = 0;
-	void handle(const http::Request& request, http::ResponseWriter& response) override {
+	asio::awaitable<void> handle(http::Request& request, http::ResponseWriter& response) override {
 		if (request.path != "/before") response.status(200);
 		if (request.path == "/partial") response.write("partial");
 		if (request.path == "/ended") response.send(200, "complete");
 		throw std::runtime_error("handler refused");
+		co_return;
 	}
 	void on_error(std::exception_ptr, const http::Request& request, http::ResponseWriter& response) override {
 		++mappings;
@@ -53,7 +63,7 @@ static void unit_cases() {
 			Application application;
 			http_log::AccessLog logging(application, options());
 			http::AsioResponseWriter writer(request, nullptr);
-			logging.handle(request, writer);
+			drive(logging.handle(request, writer));
 			require(writer.response_code() == expected && writer.response_ended());
 			require(application.mappings == (completed ? 0 : 1));
 		}
@@ -61,7 +71,7 @@ static void unit_cases() {
 			Application application;
 			http_log::AccessLog logging(application, options());
 			Writer writer;
-			logging.handle(request, writer);
+			drive(logging.handle(request, writer));
 			require(writer.code == expected && writer.ended);
 			require(application.mappings == (completed ? 0 : 1));
 		}
@@ -72,7 +82,7 @@ static void unit_cases() {
 	http_log::AccessLog logging(application, options());
 	Writer writer;
 	writer.refuse_end = true;
-	logging.handle(request, writer);
+	drive(logging.handle(request, writer));
 	require(writer.code == 500 && writer.ended && application.mappings == 1);
 }
 
@@ -82,7 +92,7 @@ static std::string exchange(http::HttpHandler& handler, std::string_view path) {
 	tcp::acceptor reservation(io, {asio::ip::address_v4::loopback(), 0});
 	const auto port = reservation.local_endpoint().port();
 	reservation.close();
-	http::HttpAsioService service(handler, 1, 0, 16);
+	http::HttpAsioService service(handler, 1, 16);
 	http::AsioBindOptions bind;
 	bind.address = "127.0.0.1";
 	service.set_bind_options(bind);

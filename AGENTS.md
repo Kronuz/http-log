@@ -66,8 +66,8 @@ rendering it indented) and the previewable-type set are hooks (`Options::prettif
   never a separate `\033[1m`, so term-color's `collapse()` sees clean triples (a bare
   SGR next to a color defeats the depth collapse).
 - **The middleware forwards the whole seam.** `on_request_body`, `wants_body_stream`,
-  `create_extension`, `should_offload`, and `on_error` all delegate to the inner
-  handler. Only `handle()` is wrapped. Don't drop a forward when the `HttpHandler`
+  `create_extension`, and `on_error` all delegate to the inner
+  handler. Only `handle()` is wrapped (it awaits the inner coroutine). Don't drop a forward when the `HttpHandler`
   interface grows, or a decorated handler loses that capability.
 - **The response is captured, not re-derived.** `CapturingWriter` wraps the real
   writer and records status / content-type / headers / body while forwarding, so the

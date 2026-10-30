@@ -20,7 +20,7 @@ block: the request line, headers, status, timing, and a prettified body.
 - 🖼️ **Inline image previews** on iTerm2 at high verbosity.
 - 🧯 **Exceptions logged with a stack trace** when the logger's backtrace hook is set.
 - 🔌 **Transparent**: forwards the whole `HttpHandler` seam, including streamed
-  bodies and offload, to your handler.
+  bodies, to your handler. `handle()` is a coroutine; the wrapper awaits the inner one.
 
 ## 📦 Installation
 
@@ -49,13 +49,13 @@ target_link_libraries(my_app PRIVATE http_log::http_log)
 #include <thread>
 
 struct App : http::HttpHandler {
-	void handle(const http::Request&, http::ResponseWriter& resp) override { resp.send(200, "hello\n"); }
+	asio::awaitable<void> handle(http::Request&, http::ResponseWriter& resp) override { resp.send(200, "hello\n"); co_return; }
 };
 
 int main() {
 	App app;
 	http_log::AccessLog access(app);   // default options
-	http::HttpAsioService service(access, /*reactors=*/2, /*workers=*/2, /*queue_limit=*/64);
+	http::HttpAsioService service(access, /*reactors=*/2, /*in_flight_limit=*/64);
 	service.start(8080);
 	std::this_thread::sleep_for(std::chrono::minutes(1));
 	service.stop();

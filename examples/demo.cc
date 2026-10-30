@@ -1,9 +1,19 @@
 #include "http_log.h"
 #include <iostream>
 
+// Runs a coroutine to completion on a private loop.
+static void drive(asio::awaitable<void> task) {
+	asio::io_context io;
+	std::exception_ptr failure;
+	asio::co_spawn(io, std::move(task), [&](std::exception_ptr e) { failure = e; });
+	io.run();
+	if (failure) { std::rethrow_exception(failure); }
+}
+
 struct Application : http::HttpHandler {
-	void handle(const http::Request&, http::ResponseWriter& response) override {
+	asio::awaitable<void> handle(http::Request&, http::ResponseWriter& response) override {
 		response.send(200, "hello\n");
+		co_return;
 	}
 };
 
@@ -27,7 +37,7 @@ int main() {
 	request.method = "GET";
 	request.path = "/hello?omitted=value";
 	ConsoleResponse response;
-	access.handle(request, response);
+	drive(access.handle(request, response));
 	Logging::finish();
 	Logging::join();
 }
