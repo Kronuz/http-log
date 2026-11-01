@@ -6,6 +6,18 @@ entries are dated.
 
 ## 2026-11-01
 
+### Fixed
+
+- cppcodec was fetched at `GIT_TAG master`, so a build could change without a commit here.
+  It is pinned to `8019b8b580f8573c33c50372baec7039dfe5a8ce`, the commit its master names
+  (2022-09-06; the last tag, `v0.2`, is from 2018) and the one `logger` pins.
+
+### Tests
+
+- `http_log_pins` (`test/check_pins.cmake`) reads `CMakeLists.txt` and fails unless every
+  `GIT_TAG` is a 40-digit commit hash. With the old file it fails on `GIT_TAG master is not
+  a 40-digit commit hash`; the five pins (http, logger, strings, repr, cppcodec) pass.
+
 ### Added
 
 - `docs/API.md`: `AccessLog`, the `Options` table, metadata-only mode and the error path,

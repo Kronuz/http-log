@@ -38,10 +38,11 @@ endif()
 # cppcodec: a compact, dedicated base64 codec (the base64_rfc4648 Xapiand's to_text
 # used). Header-only; SOURCE_SUBDIR points at a non-existent dir so its CMakeLists
 # (which requests an old CMake policy) is not run -- we only need the headers.
+# Pinned to the commit its master names (2022-09-06; the last tag, v0.2, is from 2018).
 if(NOT DEFINED cppcodec_SOURCE_DIR)
   FetchContent_Declare(cppcodec
     GIT_REPOSITORY https://github.com/tplgy/cppcodec.git
-    GIT_TAG        master
+    GIT_TAG        8019b8b580f8573c33c50372baec7039dfe5a8ce
     SOURCE_SUBDIR  do-not-configure)
   FetchContent_MakeAvailable(cppcodec)
 endif()
@@ -62,6 +63,8 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_link_libraries(http_log_completion_test PRIVATE http_log)
   add_test(NAME http_log_completion COMMAND http_log_completion_test)
   set_tests_properties(http_log_completion PROPERTIES TIMEOUT 60)
+  # Every FetchContent dependency is pinned to a full commit hash.
+  add_test(NAME http_log_pins COMMAND ${CMAKE_COMMAND} -DFILE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt -P ${CMAKE_CURRENT_SOURCE_DIR}/test/check_pins.cmake)
   add_executable(http_log_demo examples/demo.cc)
   target_link_libraries(http_log_demo PRIVATE http_log)
 endif()

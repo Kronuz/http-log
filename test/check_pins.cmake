@@ -1,0 +1,26 @@
+# Every FetchContent dependency in CMakeLists.txt is pinned to a full commit hash, never to a
+# branch or a tag: a branch moves under a build that did not change.
+#
+#   cmake -DFILE=CMakeLists.txt -P test/check_pins.cmake
+if(NOT DEFINED FILE)
+  message(FATAL_ERROR "pass -DFILE=<CMakeLists.txt>")
+endif()
+file(READ "${FILE}" content)
+string(REGEX MATCHALL "GIT_TAG[ \t]+[^ \t\r\n)]+" tags "${content}")
+list(LENGTH tags count)
+if(count LESS 5)
+  message(FATAL_ERROR "found ${count} GIT_TAG lines in ${FILE}, expected at least 5 (http, logger, strings, repr, cppcodec)")
+endif()
+set(failed FALSE)
+foreach(tag IN LISTS tags)
+  string(REGEX REPLACE "GIT_TAG[ \t]+" "" ref "${tag}")
+  string(LENGTH "${ref}" length)
+  if(NOT ref MATCHES "^[0-9a-f]+$" OR NOT length EQUAL 40)
+    message(SEND_ERROR "GIT_TAG ${ref} is not a 40-digit commit hash")
+    set(failed TRUE)
+  endif()
+endforeach()
+if(failed)
+  message(FATAL_ERROR "unpinned FetchContent dependencies in ${FILE}")
+endif()
+message(STATUS "${count} FetchContent pins, all full commit hashes")

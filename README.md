@@ -65,8 +65,8 @@ listener, and [prism](https://github.com/Kronuz/prism) is a complete service tha
 Requires a C++20 compiler and CMake 3.16 or newer; it fetches
 [http](https://github.com/Kronuz/http), [logger](https://github.com/Kronuz/logger),
 [strings](https://github.com/Kronuz/strings) and [repr](https://github.com/Kronuz/repr) at
-pinned commits, and cppcodec's headers. CI builds it on Linux (x86_64, arm64), macOS (arm64,
-x86_64), and FreeBSD, plus ASan, UBSan, and TSan builds.
+pinned commits, and cppcodec's headers at a pinned commit. CI builds it on Linux (x86_64,
+arm64), macOS (arm64, x86_64), and FreeBSD, plus ASan, UBSan, and TSan builds.
 
 ```cmake
 include(FetchContent)

@@ -22,6 +22,7 @@ CMakeLists.txt    INTERFACE library http_log (+ alias http_log::http_log); Fetch
                   already has them is reused.
 test/test.cc      ctest: palettes, render_body branches, status prefix/level, the
                   middleware end-to-end through a capturing sink (CHECK, not assert).
+test/check_pins.cmake  ctest "http_log_pins": every FetchContent GIT_TAG is a full commit hash.
 ```
 
 ## Dependencies
@@ -34,7 +35,8 @@ test/test.cc      ctest: palettes, render_body branches, status prefix/level, th
 - **strings** (`strings::from_bytes` / `indent` / `format`) and **repr** (`repr`) — the
   same utilities Xapiand's `to_text` used, so the rendering is verbatim.
 - **cppcodec** — the base64 codec (`base64_rfc4648`) for the iTerm2 image escape, the
-  same one Xapiand used. Fetched header-only (`SOURCE_SUBDIR` skips its CMakeLists).
+  same one Xapiand used. Fetched header-only (`SOURCE_SUBDIR` skips its CMakeLists), at the
+  commit its master names (`8019b8b`, the one `logger` pins).
 
 No dependency on Xapiand. The body pretty-printing (decoding a body to a MsgPack and
 rendering it indented) and the previewable-type set are hooks (`Options::prettify`,
