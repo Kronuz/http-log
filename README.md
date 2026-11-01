@@ -7,37 +7,25 @@ Part of [Kronuz C++ Libraries](https://github.com/Kronuz/cpp-libraries), a colle
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
 ![Header-only](https://img.shields.io/badge/header--only-yes-green.svg)
 
-Colored request and response logs for any [http](https://github.com/Kronuz/http)
-service, in C++20. Wrap your handler, and every exchange is logged as one readable
-block: the request line, headers, status, timing, and a prettified body.
+Header-only HTTP access-log middleware for C++20: colored, prettified request and response blocks for http services.
+`http_log::AccessLog` wraps any [http](https://github.com/Kronuz/http) handler and logs each
+exchange through [logger](https://github.com/Kronuz/logger) as two readable blocks: the
+request line and headers, then the status, headers and a prettified body. Reach for it while
+developing or debugging a service, when you want to read the traffic.
 
 ## ✨ Highlights
 
-- 🎨 **A color per method and per status**, from verbs like `GET` and `DELETE` to
-  `5xx`.
-- 🪄 **Prettified bodies** through your own hook (JSON, MsgPack, YAML); binary is
-  shown as an escaped, capped `repr`, and large bodies as a `<body 2.4 MiB>` summary.
-- 🖼️ **Inline image previews** on iTerm2 at high verbosity.
-- 🧯 **Exceptions logged with a stack trace** when the logger's backtrace hook is set.
-- 🔌 **Transparent**: forwards the whole `HttpHandler` seam, including streamed
-  bodies, to your handler. `handle()` is a coroutine; the wrapper awaits the inner one.
-
-## 📦 Installation
-
-Requires a C++20 compiler and CMake 3.14 or newer. It brings
-[http](https://github.com/Kronuz/http) and [logger](https://github.com/Kronuz/logger).
-CI builds it on Linux (x86_64, arm64), macOS (arm64, x86_64), and FreeBSD, plus ASan,
-UBSan, and TSan builds.
-
-```cmake
-include(FetchContent)
-FetchContent_Declare(http_log
-  GIT_REPOSITORY https://github.com/Kronuz/http-log.git
-  GIT_TAG        main)
-FetchContent_MakeAvailable(http_log)
-
-target_link_libraries(my_app PRIVATE http_log::http_log)
-```
+- **A color per method and per status.** Verbs from `GET` to `DELETE` and custom ones like
+  `RESTORE` each have a tint, and so do `2xx`, `3xx`, `404`, `4xx` and `5xx`.
+- **Prettified bodies.** Your hook renders JSON, MsgPack or YAML; binary shows as an
+  escaped, capped `repr`, and a large body as a `<body 2.4 MiB>` summary.
+- **Inline image previews.** Image and document bodies preview inline on iTerm2 at high
+  verbosity.
+- **The exception path.** A handler that throws gets its own error mapping, and a `5xx` is
+  logged with a stack trace when the logger's backtrace hook is set.
+- **Metadata-only mode.** `Options::metadata_only` logs method, escaped path and status,
+  and omits headers, bodies and query values.
+- **Transparent.** Streamed request bodies and extensions pass through to your handler.
 
 ## 🚀 Quick start
 
@@ -46,71 +34,91 @@ target_link_libraries(my_app PRIVATE http_log::http_log)
 #include "http_log.h"
 
 #include <chrono>
+#include <memory>
 #include <thread>
 
 struct App : http::HttpHandler {
-	asio::awaitable<void> handle(http::Request&, http::ResponseWriter& resp) override { resp.send(200, "hello\n"); co_return; }
+	asio::awaitable<void> handle(http::Request&, http::ResponseWriter& resp) override {
+		resp.send(200, "hello\n");
+		co_return;
+	}
 };
 
 int main() {
+	Logging::config.log_level = LOG_DEBUG;  // requests log at DEBUG
+	Logging::add_handler(std::make_unique<StderrLogger>());
+
 	App app;
-	http_log::AccessLog access(app);   // default options
+	http_log::AccessLog access(app);  // default options
 	http::HttpAsioService service(access, /*reactors=*/2, /*in_flight_limit=*/64);
-	service.start(8080);
+	service.start(8080);  // curl localhost:8080/ logs a GET block and a 200 block to stderr
 	std::this_thread::sleep_for(std::chrono::minutes(1));
 	service.stop();
 }
 ```
 
-Requests log at `DEBUG`; raise the logger's level, or the `Options` levels, to see
-them. [prism](https://github.com/Kronuz/prism) is a complete example.
+[`examples/demo.cc`](examples/demo.cc) logs a metadata-only exchange without a network
+listener, and [prism](https://github.com/Kronuz/prism) is a complete service that uses it.
 
-Set `Options::metadata_only = true` for method, escaped path and status blocks without headers, bodies, query values, image previews or exception descriptions. Method and path labels are bounded to 32 and 256 input bytes. Response blocks include the handler's body byte count. The default retains Xapiand's detailed rendering. Logging/rendering failures do not replace a successful application response.
+## 📦 Installation
 
-`examples/demo.cc` shows metadata-only logging without a network listener. Build the standalone `http_log_demo` target and run it in a terminal to see the shared method/status colors; redirected output follows the logger's normal color policy.
+Requires a C++20 compiler and CMake 3.16 or newer; it fetches
+[http](https://github.com/Kronuz/http), [logger](https://github.com/Kronuz/logger),
+[strings](https://github.com/Kronuz/strings) and [repr](https://github.com/Kronuz/repr) at
+pinned commits, and cppcodec's headers. CI builds it on Linux (x86_64, arm64), macOS (arm64,
+x86_64), and FreeBSD, plus ASan, UBSan, and TSan builds.
 
-`AccessLog` currently supports synchronous responses only. Do not wrap a handler that transfers response ownership through `defer()` or `stream()`; those require transport completion observation rather than logging when `handle()` returns. The synchronous response block describes the handler's response before transport transforms, not confirmed socket delivery.
+```cmake
+include(FetchContent)
+FetchContent_Declare(http_log
+  GIT_REPOSITORY https://github.com/Kronuz/http-log.git
+  GIT_TAG        d2315b86ee0483c0b2fa8b25f82e79e64e40b33d)  # or main, to track the tip
+FetchContent_MakeAvailable(http_log)
 
-Error mapping follows successful `end()`, not whether a status was set. An unfinished handler that throws gets its normal error mapping and a 500 fallback if mapping remains unfinished; exceptions after completion do not remap the response. Accurate buffered completion requires the HTTP version pinned here; custom buffered writers should override `response_ended()` rather than rely on its legacy started approximation.
+target_link_libraries(my_app PRIVATE http_log::http_log)
+```
 
-## ⚙️ Configuration
-
-| `http_log::Options` | Default | Meaning |
-|---|---|---|
-| `prettify` | none | `(content_type, body) -> optional<string>` for structured bodies |
-| `can_preview` | images and documents | which content types preview inline |
-| `body_limit` | 10 KiB | larger bodies log as a size summary |
-| `capture_limit` | 1 MiB | most response bytes the middleware retains |
-| `images` | `true` | iTerm2 inline previews |
-| `client_colors` | `false` | lead each request with its client's address (`Request::remote`), in a color stable per address |
-| `request_level` | `LOG_DEBUG` | the request block |
-| `level_2xx` | `LOG_DEBUG` | 2xx, 3xx, and 404 responses |
-| `level_4xx` / `level_5xx` | `LOG_INFO` / `LOG_NOTICE` | error responses |
-| `image_level` | `LOG_DEBUG + 1` | previews appear above this level |
+```cpp
+#include "http_log.h"
+```
 
 ## 🎯 When to use it
 
-- ✅ Development and debugging of an http service; a readable access log.
-- ❌ Machine-parsed access logs: the output is for people (colors, indentation).
+Use it during development and debugging of an http service, or as an access log people
+read.
+
+Not for:
+
+- **Machine-parsed access logs.** The output is for people: colors, emoji and indentation.
+- **Deferred or streamed responses.** `AccessLog` logs the response when `handle()` returns;
+  do not wrap a handler that hands its response off through `defer()` or `stream()`.
+- **Proof of delivery.** The response block is the handler's response before transport
+  transforms, not what reached the socket.
 
 ## 📚 Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md): the palettes, levels, and exception path, and
-  the Xapiand rendering it recovers.
-- [AGENTS.md](AGENTS.md): file map, streaming, and invariants.
+- [docs/API.md](docs/API.md): `AccessLog`, every `Options` field, metadata-only mode and the
+  error path.
+- [ARCHITECTURE.md](ARCHITECTURE.md): the palettes, the levels, the exception path, and the
+  Xapiand rendering it reproduces.
+- [CHANGELOG.md](CHANGELOG.md): dated changes.
+- [AGENTS.md](AGENTS.md): file map, streaming and invariants.
+- [Kronuz C++ Libraries](https://github.com/Kronuz/cpp-libraries): the catalog.
 
 ## 🛠️ Building and testing
 
 ```sh
-cmake -B build && cmake --build build && ctest --test-dir build
+cmake -B build
+cmake --build build
+ctest --test-dir build
 ```
 
 ## 🤝 Contributing
 
-Issues and pull requests are welcome. Read [AGENTS.md](AGENTS.md) first. CI must
-pass on every platform.
+Read [AGENTS.md](AGENTS.md) and the [catalog's rules](https://github.com/Kronuz/cpp-libraries/blob/main/AGENTS.md)
+first.
 
 ## 📄 License
 
-MIT, Copyright (c) 2015-2019 Dubalu LLC. See [LICENSE](LICENSE). Extracted from
-[Xapiand](https://github.com/Kronuz/Xapiand).
+MIT, Copyright (c) 2026 Germán Méndez Bravo and (c) 2015-2020 Dubalu LLC. See
+[LICENSE](LICENSE). Extracted from [Xapiand](https://github.com/Kronuz/Xapiand).
