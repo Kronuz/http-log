@@ -13,14 +13,14 @@ include(FetchContent)
 # plus Request / ResponseWriter / reason_phrase. Each dependency is guarded so a
 # consumer that already brought it in is reused rather than fetched twice.
 if(NOT TARGET http::http)
-  FetchContent_Declare(http_lib GIT_REPOSITORY https://github.com/Kronuz/http.git GIT_TAG 8c5c66842ddad86185d79bed05690e73375896f6)
+  FetchContent_Declare(http_lib GIT_REPOSITORY https://github.com/Kronuz/http.git GIT_TAG d76c5efa4d4c4ae1a181780f593dc6b06786c9a5)
   FetchContent_MakeAvailable(http_lib)
 endif()
 
 # The deferred, colored logger (brings term-color, whose rgb()/rgba()/brgb() build
 # the palettes and whose sink resolves the stacked escapes).
 if(NOT TARGET logger::logger)
-  FetchContent_Declare(logger GIT_REPOSITORY https://github.com/Kronuz/logger.git GIT_TAG bb2d16c84de4e5316be42ec05783e43c2f144844)
+  FetchContent_Declare(logger GIT_REPOSITORY https://github.com/Kronuz/logger.git GIT_TAG dec78b5aa0aedea5a2dd6ce8327e05e3a2174435)
   FetchContent_MakeAvailable(logger)
 endif()
 
@@ -32,7 +32,7 @@ if(NOT TARGET repr::repr)
   FetchContent_MakeAvailable(repr)
 endif()
 if(NOT TARGET strings::strings)
-  FetchContent_Declare(strings GIT_REPOSITORY https://github.com/Kronuz/strings.git GIT_TAG 4f7fd80cb449a0de1d231a44f262ec22a9b15a35)
+  FetchContent_Declare(strings GIT_REPOSITORY https://github.com/Kronuz/strings.git GIT_TAG 5c98ec5a9ac21feeb3d271fcacbc0b4328ec8c26)
   FetchContent_MakeAvailable(strings)
 endif()
 
