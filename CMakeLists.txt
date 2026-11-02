@@ -20,7 +20,7 @@ endif()
 # The deferred, colored logger (brings term-color, whose rgb()/rgba()/brgb() build
 # the palettes and whose sink resolves the stacked escapes).
 if(NOT TARGET logger::logger)
-  FetchContent_Declare(logger GIT_REPOSITORY https://github.com/Kronuz/logger.git GIT_TAG dec78b5aa0aedea5a2dd6ce8327e05e3a2174435)
+  FetchContent_Declare(logger GIT_REPOSITORY https://github.com/Kronuz/logger.git GIT_TAG 765528e977b59e97b0ebf79738f9bf9041635c61)
   FetchContent_MakeAvailable(logger)
 endif()
 
