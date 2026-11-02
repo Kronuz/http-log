@@ -13,26 +13,27 @@ include(FetchContent)
 # plus Request / ResponseWriter / reason_phrase. Each dependency is guarded so a
 # consumer that already brought it in is reused rather than fetched twice.
 if(NOT TARGET http::http)
-  FetchContent_Declare(http_lib GIT_REPOSITORY https://github.com/Kronuz/http.git GIT_TAG e70ba3494e42547c91013e592232ff31d26ebc09)
+  FetchContent_Declare(http_lib GIT_REPOSITORY https://github.com/Kronuz/http.git GIT_TAG 8c5c66842ddad86185d79bed05690e73375896f6)
   FetchContent_MakeAvailable(http_lib)
 endif()
 
 # The deferred, colored logger (brings term-color, whose rgb()/rgba()/brgb() build
 # the palettes and whose sink resolves the stacked escapes).
 if(NOT TARGET logger::logger)
-  FetchContent_Declare(logger GIT_REPOSITORY https://github.com/Kronuz/logger.git GIT_TAG 89e894119884da6dc52b0e502a87046c11a83445)
+  FetchContent_Declare(logger GIT_REPOSITORY https://github.com/Kronuz/logger.git GIT_TAG bb2d16c84de4e5316be42ec05783e43c2f144844)
   FetchContent_MakeAvailable(logger)
 endif()
 
 # strings (from_bytes / indent / format) and repr — the same utilities Xapiand's
-# to_text used, so the rendering is verbatim.
-if(NOT TARGET strings::strings)
-  FetchContent_Declare(strings GIT_REPOSITORY https://github.com/Kronuz/strings.git GIT_TAG 09d4d1bfbd7dd475cc4c532338fd19beca19dcbe)
-  FetchContent_MakeAvailable(strings)
-endif()
+# to_text used, so the rendering is verbatim. repr is declared before strings:
+# FetchContent keeps the first declaration of a name, and strings pins its own repr.
 if(NOT TARGET repr::repr)
-  FetchContent_Declare(repr GIT_REPOSITORY https://github.com/Kronuz/repr.git GIT_TAG 9acb04d12ecbed440ad02e967e45da1ee11c145c)
+  FetchContent_Declare(repr GIT_REPOSITORY https://github.com/Kronuz/repr.git GIT_TAG 12ea8805c41484795712b53bd7303e49021aaf0b)
   FetchContent_MakeAvailable(repr)
+endif()
+if(NOT TARGET strings::strings)
+  FetchContent_Declare(strings GIT_REPOSITORY https://github.com/Kronuz/strings.git GIT_TAG 4f7fd80cb449a0de1d231a44f262ec22a9b15a35)
+  FetchContent_MakeAvailable(strings)
 endif()
 
 # cppcodec: a compact, dedicated base64 codec (the base64_rfc4648 Xapiand's to_text
