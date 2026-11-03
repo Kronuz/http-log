@@ -7,18 +7,12 @@ static void require(bool condition) {
 	if (!condition) throw std::runtime_error("HTTP logging completion regression");
 }
 
-// Runs a coroutine to completion on a private loop.
-static void drive(asio::awaitable<void> task) {
-	asio::io_context io;
-	std::exception_ptr failure;
-	asio::co_spawn(io, std::move(task), [&](std::exception_ptr e) { failure = e; });
-	io.run();
-	if (failure) { std::rethrow_exception(failure); }
-}
+// Runs a task to completion on the calling thread.
+static void drive(task::task<void> t) { task::sync_wait(std::move(t)); }
 
 struct Application : http::HttpHandler {
 	unsigned mappings = 0;
-	asio::awaitable<void> handle(http::Request& request, http::ResponseWriter& response) override {
+	task::task<void> handle(http::Request& request, http::ResponseWriter& response) override {
 		if (request.path != "/before") response.status(200);
 		if (request.path == "/partial") response.write("partial");
 		if (request.path == "/ended") response.send(200, "complete");

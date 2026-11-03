@@ -6,6 +6,14 @@ entries are dated.
 
 Upgrading a pin from before 2026-10-30: [the consumer upgrade note](https://github.com/Kronuz/cpp-libraries/blob/main/docs/UPGRADING-2026-10.md#http-log) lists what changes for callers, how to find affected inputs, the commits not to pin, and the speedup.
 
+## 2026-11-03
+
+### Changed
+
+- `AccessLog::handle` returns `task::task<void>`, as http's handlers do from http:2bede1b (step
+  H1); it awaits the inner handler as a child task. http is pinned at
+  `2bede1b935af107214fa25403e45de3515c8fd1a`. A consumer moves its http and http-log pins together.
+
 ## 2026-11-01
 
 ### Fixed

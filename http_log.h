@@ -368,7 +368,7 @@ class AccessLog : public http::HttpHandler {
 public:
 	explicit AccessLog(http::HttpHandler& inner, Options opts = {}) : inner_(inner), opts_(std::move(opts)) {}
 
-	asio::awaitable<void> handle(http::Request& req, http::ResponseWriter& response) override {
+	task::task<void> handle(http::Request& req, http::ResponseWriter& response) override {
 		try { log_request(req); } catch (...) {}
 
 		// Zero-copy path: a buffered writer retains its response, so log it by reference

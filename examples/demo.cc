@@ -1,17 +1,11 @@
 #include "http_log.h"
 #include <iostream>
 
-// Runs a coroutine to completion on a private loop.
-static void drive(asio::awaitable<void> task) {
-	asio::io_context io;
-	std::exception_ptr failure;
-	asio::co_spawn(io, std::move(task), [&](std::exception_ptr e) { failure = e; });
-	io.run();
-	if (failure) { std::rethrow_exception(failure); }
-}
+// Runs a task to completion on the calling thread.
+static void drive(task::task<void> t) { task::sync_wait(std::move(t)); }
 
 struct Application : http::HttpHandler {
-	asio::awaitable<void> handle(http::Request&, http::ResponseWriter& response) override {
+	task::task<void> handle(http::Request&, http::ResponseWriter& response) override {
 		response.send(200, "hello\n");
 		co_return;
 	}

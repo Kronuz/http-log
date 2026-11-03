@@ -38,7 +38,7 @@ developing or debugging a service, when you want to read the traffic.
 #include <thread>
 
 struct App : http::HttpHandler {
-	asio::awaitable<void> handle(http::Request&, http::ResponseWriter& resp) override {
+	task::task<void> handle(http::Request&, http::ResponseWriter& resp) override {
 		resp.send(200, "hello\n");
 		co_return;
 	}

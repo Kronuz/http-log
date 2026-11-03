@@ -31,17 +31,11 @@ struct CaptureSink : Logger {
 
 // A trivial handler: echoes the request body (or "ok") as application/json, or
 // throws on /boom so the exception + error paths can be exercised.
-// Runs a coroutine to completion on a private loop.
-static void drive(asio::awaitable<void> task) {
-	asio::io_context io;
-	std::exception_ptr failure;
-	asio::co_spawn(io, std::move(task), [&](std::exception_ptr e) { failure = e; });
-	io.run();
-	if (failure) { std::rethrow_exception(failure); }
-}
+// Runs a task to completion on the calling thread.
+static void drive(task::task<void> t) { task::sync_wait(std::move(t)); }
 
 struct Echo : http::HttpHandler {
-	asio::awaitable<void> handle(http::Request& req, http::ResponseWriter& resp) override {
+	task::task<void> handle(http::Request& req, http::ResponseWriter& resp) override {
 		if (req.path == "/boom") { throw std::runtime_error("boom"); }
 		resp.send(200, req.body.empty() ? std::string("{\"ok\":true}") : req.body, "application/json");
 		co_return;
@@ -52,7 +46,7 @@ struct Echo : http::HttpHandler {
 // error). The middleware must map + log the response but must NOT cry "unhandled
 // exception" -- that CRIT line is reserved for 5xx / unanswered requests.
 struct ClientErr : http::HttpHandler {
-	asio::awaitable<void> handle(http::Request& /*req*/, http::ResponseWriter& /*resp*/) override {
+	task::task<void> handle(http::Request& /*req*/, http::ResponseWriter& /*resp*/) override {
 		throw std::runtime_error("bad input");
 		co_return;
 	}
@@ -241,7 +235,7 @@ int main() {
 		CHECK(metadata_writer.body.empty());
 		CHECK(metadata_writer.body_size == req.body.size());
 		struct PrivateError : http::HttpHandler {
-			asio::awaitable<void> handle(http::Request&, http::ResponseWriter&) override {
+			task::task<void> handle(http::Request&, http::ResponseWriter&) override {
 				throw std::runtime_error("private-exception");
 				co_return;
 			}
