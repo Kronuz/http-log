@@ -97,6 +97,8 @@ Not for:
 
 ## 📚 Documentation
 
+- [The Seam](https://kronuz.github.io/blog/http/):
+  the Familiars post on why it exists and how it works.
 - [docs/API.md](docs/API.md): `AccessLog`, every `Options` field, metadata-only mode and the
   error path.
 - [ARCHITECTURE.md](ARCHITECTURE.md): the palettes, the levels, the exception path, and the
